@@ -2,6 +2,165 @@
 
 ## 2026-06-06
 ### Type
+- Codex smooth-latest ProgramOutput lag worsening investigation diagnostics
+
+### Work
+- Inspected the smooth-latest ProgramOutput frame selection path in
+  `apps/switcher/src/main.rs`.
+- Confirmed the current smooth-latest render choice intentionally prefers the
+  latest matching continuous decoded frame for the selected Program source, even
+  when that frame is stale, before falling back to last-valid Program frame or
+  startup/selected one-shot decoded frame.
+- Traced the existing lag metrics:
+  - `program_selected_source_frame_lag` is emitted from
+    `continuous_decode_requested_minus_latest_lag`.
+  - `program_continuous_selected_frame_lag` is carried from the selected frame
+    id minus the latest matching continuous decoded frame id.
+  - `continuous_decode_latest_selected_to_output_frame_gap` is the continuous
+    decoder selected/latest-output gap already exposed by runtime timing.
+- Current interpretation of the latest `56 / 56 / 56` FAIL:
+  - the equal values strongly indicate the latest matching continuous decoded
+    frame used by Program was 56 frames behind the selected source frame;
+  - this is not evidence that ProgramOutput rendered 4-view Preview, placeholder,
+    black, or a wrong selected source;
+  - this does not yet prove the deeper runtime cause, such as feed cadence,
+    FFmpeg throughput, stdout drain, queue drop policy, or input/output backlog,
+    because the referenced manual log directory is not present in this repo
+    filesystem for direct inspection.
+- Added smooth-latest-only diagnostics to split the previous ambiguous lag
+  lens into selected/rendered/latest-continuous frame ids and gaps:
+  - `program_smooth_latest_selected_frame_id`
+  - `program_smooth_latest_rendered_frame_id`
+  - `program_smooth_latest_latest_continuous_frame_id`
+  - `program_smooth_latest_selected_minus_rendered_lag`
+  - `program_smooth_latest_selected_minus_latest_continuous_lag`
+  - `program_smooth_latest_rendered_minus_latest_continuous_gap`
+  - `program_smooth_latest_source_mismatch_count`
+  - `program_smooth_latest_stale_reuse_count`
+  - `program_smooth_latest_cache_age_ms`
+  - `program_smooth_latest_frame_age_ms`
+- Kept ProgramOutput behavior unchanged:
+  - Program remains clean / selected-only
+  - no Program overlay, watermark, Preview label, or 4-view-as-Program fallback
+  - `StreamSync 4-view Output` remains required for operator monitoring but
+    must stay out of the OBS Program scene
+- Did not close ProgramOutput near-MVP and did not call the latest run `PASS`.
+
+### Changed Files
+- `apps/switcher/src/main.rs`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+- `docs/operations/obs-capture-validation.md`
+- `docs/operations/continuous-output-pipeline-experiment-plan.md`
+
+### TODO Update
+- Changed the immediate lag item from initial investigation to a rerun using
+  the new `program_smooth_latest_*` diagnostics.
+- Kept the latest `56 / 56 / 56` as a closeout blocker.
+- Kept selected-source manual visual evidence and ProgramOutput blocker audit
+  as follow-up work.
+
+### Validation
+- `cargo fmt`
+  - result: PASS
+- `cargo check -p stream-sync-switcher`
+  - result: PASS with existing dead-code warnings
+- `cargo test -p stream-sync-switcher smooth_latest`
+  - result: PASS, 2 focused tests
+- `cargo test -p stream-sync-switcher program_output`
+  - result: PASS, 3 filtered tests
+
+## 2026-06-06
+### Type
+- Codex improved-marker criteria-based ProgramOutput validation rerun record
+
+### Work
+- Reviewed the new manual rerun evidence in
+  `D:\stream-sync\manual-logs\program-output-criteria-validation-20260606-001029`.
+- Recorded the next criteria-based ProgramOutput validation run using the
+  improved validation-only source marker generation phase
+  `large-corner-band-v2`.
+- Classified the rerun as:
+  - OBS safety: `PASS`
+  - selected-source visual verification: `WARNING`
+  - lag criteria: `Fail`
+  - overall ProgramOutput criteria-based validation: `FAIL`
+- Kept ProgramOutput closeout blocked; the blocker audit still needs updating.
+- Recorded repeated lag worsening as the next highest-priority task:
+  previous warning-level `12 / 12 / 12` degraded further to `56 / 56 / 56`.
+- Preserved the production wording:
+  - OBS Program scene captures only `StreamSync Program Output`
+  - `StreamSync 4-view Output` remains required for operator monitoring
+  - `StreamSync 4-view Output` may be visible to the operator, but must not be
+    active in the OBS Program scene
+- Kept same-loop Preview tuning paused.
+- Kept this step docs-only; no Rust files were changed.
+
+### Validation Result Recorded
+- Log dir:
+  `D:\stream-sync\manual-logs\program-output-criteria-validation-20260606-001029`
+- Validation setup:
+  - Program selected source: `player2`
+  - client markers: `P1` / `P2`
+  - ProgramOutput enabled
+  - Program continuous decode enabled
+  - smooth-latest enabled
+  - Program-first validation mode enabled
+  - startup bootstrap one-shot enabled
+- Classification:
+  - OBS safety: `PASS`
+  - selected-source visual verification: `WARNING`
+  - lag criteria: `Fail`
+  - overall ProgramOutput criteria-based validation: `FAIL`
+- Supporting facts:
+  - client summaries confirm marker enablement:
+    `validation_source_marker_enabled=true`,
+    `validation_source_marker_label=P1|P2`
+  - Program selection diagnostics stayed correct:
+    `program_output_requested_client_id=player2`,
+    `program_output_selected_client_id=player2`,
+    `program_output_selected_slot_index=1`
+  - Program remained clean:
+    `program_output_black_frame_render_count=0`,
+    `program_output_placeholder_render_count=0`,
+    `program_output_missing_after_first_render_count=0`
+  - startup bootstrap remained startup-only:
+    `program_startup_bootstrap_success_count=1`,
+    `program_startup_bootstrap_actual_decode_invoked_count=1`,
+    `program_startup_bootstrap_used_for_first_render=true`,
+    `program_render_used_one_shot_fallback_count=1`
+- Fail facts:
+  - `program_selected_source_frame_lag=56`
+  - `program_continuous_selected_frame_lag=56`
+  - `continuous_decode_latest_selected_to_output_frame_gap=56`
+  - `program_render_effective_fps=21.362`
+- Visual verification limitation:
+  - repo-backed manual visual evidence still does not explicitly record that
+    `P2` was human-visible in Program and `P1` was absent from Program
+  - therefore selected-source visual verification is still not promoted to
+    `PASS`
+
+### Changed Files
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+- `docs/operations/obs-capture-validation.md`
+- `docs/operations/continuous-output-pipeline-experiment-plan.md`
+
+### TODO Update
+- Replaced the rerun-recording task with a lag investigation task because the
+  new run crossed the lag `Fail` threshold.
+- Kept a follow-up task to preserve manual visual evidence for `P2` / not-`P1`
+  in the repo, or move to marker/source visual strategy if the marker was still
+  hard to read in practice.
+- Kept ProgramOutput closeout blocked and same-loop Preview tuning paused.
+
+### Validation
+- Docs-only change; Rust files were not touched.
+- `git diff --check`
+  - result: PASS
+
+## 2026-06-06
+### Type
 - Codex improved-marker validation status carry-forward and 4-view Preview requirement clarification
 
 ### Work

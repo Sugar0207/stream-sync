@@ -566,18 +566,18 @@ Validated command examples for the Program path:
       steady-state fallback
     - latest completed-template criteria-based validation run:
       - log dir:
-        `S:\stream-sync\manual-logs\program-output-criteria-validation-20260605-235356`
+        `D:\stream-sync\manual-logs\program-output-criteria-validation-20260606-001029`
       - overall ProgramOutput criteria-based validation:
-        `WARNING`, not `PASS`
+        `FAIL`, not `PASS`
       - OBS safety classification:
         `PASS`
       - Program cleanliness:
         `PASS`
       - lag criteria classification:
-        `Warning`
+        `Fail`
       - selected-source visual verification:
-        `incomplete / WARNING`
-      - good facts retained:
+        `WARNING`
+      - retained good facts:
         `program_output_requested_client_id=player2`,
         `program_output_selected_client_id=player2`,
         `program_output_selected_slot_index=1`,
@@ -587,48 +587,53 @@ Validated command examples for the Program path:
         `program_startup_bootstrap_success_count=1`,
         `program_startup_bootstrap_actual_decode_invoked_count=1`,
         `program_startup_bootstrap_used_for_first_render=true`,
-        client marker diagnostics `P1` / `P2`,
-        OBS Program scene/source list checked,
-        OBS captured only `StreamSync Program Output`,
-        OBS did not capture `StreamSync 4-view Output`,
-        `StreamSync 4-view Output` was hidden in the Program scene,
-        Preview / multiview source was absent in the Program scene,
-        ProgramOutput window title was verified,
-        wrong-window suspicion was none,
-        Program had no 4-view layout,
-        Program had no border/debug UI/Preview label,
-        black / placeholder was none,
-        perceived stutter was small
-      - warning facts:
-        `program_selected_source_frame_lag=12`,
-        `program_continuous_selected_frame_lag=12`,
-        `continuous_decode_latest_selected_to_output_frame_gap=12`,
-        `program_render_effective_fps=20.796`,
-        Program P1 marker visible was indeterminate,
-        Program P2 marker visible was indeterminate
+        `program_render_used_one_shot_fallback_count=1`,
+        client marker diagnostics still showed `P1` / `P2`
+      - fail facts:
+        `program_selected_source_frame_lag=56`,
+        `program_continuous_selected_frame_lag=56`,
+        `continuous_decode_latest_selected_to_output_frame_gap=56`,
+        `program_render_effective_fps=21.362`
+      - selected-source limitation:
+        repo-backed manual visual evidence still does not explicitly record that
+        `P2` was human-visible in Program and `P1` was absent from Program, so
+        selected-source visual verification is not promoted to `PASS`
       - interpretation:
-        OBS safety and Program cleanliness are `PASS`; ProgramOutput stayed
-        clean/stable and black / placeholder stayed `0`. However lag moved into
-        `Warning` territory and the validation markers were too mechanical /
-        not human-readable enough for P1 / P2 to be distinguished by OBS
-        inspection.
+        the improved-marker rerun is now recorded and ProgramOutput remained
+        clean/stable with black / placeholder still `0`, but lag worsened far
+        beyond the previous `12 / 12 / 12` warning-level run and crossed the
+        draft `Fail` threshold. This rerun therefore fails on lag even though
+        OBS safety stays `PASS`.
       - result handling:
-        do not call this run `PASS`; keep ProgramOutput closeout blocked and
-        make validation-only client/source marker visibility the next blocker.
-        The marker must remain source-side and opt-in, with no ProgramOutput
-        overlay, watermark, Preview label, or 4-view-as-Program fallback.
-      - marker improvement:
-        implemented `validation_source_marker_style=large-corner-band-v2` as a
-        larger source-side validation marker. It uses a large top-left corner
-        band, high-contrast border, block `P` + digit glyphs, and distinct
-        P1/P2 bottom pattern positions so P1 and P2 remain visibly different
-        even if text is blurred by encode/decode or OBS scaling.
-      - current improved-marker status:
-        no repo-backed completed manual rerun with `large-corner-band-v2` is
-        recorded yet, so the current criteria-based classification remains a
-        carried-forward `WARNING` until a human-visible `P2` / not-`P1`
-        Program check is captured
-    - lag-focused validation checklist for the next rerun:
+        keep ProgramOutput closeout blocked, make smooth-latest lag
+        investigation the next task, and preserve the requirement that the
+        marker remains source-side and opt-in with no ProgramOutput overlay,
+        watermark, Preview label, or 4-view-as-Program fallback.
+      - follow-up code investigation:
+        current code tracing shows smooth-latest ProgramOutput prefers the
+        latest matching continuous decoded frame for the selected Program
+        source. The equal `56 / 56 / 56` values therefore most likely mean the
+        latest matching continuous decoded frame and the Program-rendered frame
+        were both 56 frames behind the selected source frame, not that Program
+        chose 4-view Preview or a placeholder/cache path. This remains a
+        blocker and still needs runtime confirmation with the new diagnostics
+        because the manual log directory is not repo-local in this session.
+      - added diagnostics for the next rerun:
+        `program_smooth_latest_selected_frame_id`,
+        `program_smooth_latest_rendered_frame_id`,
+        `program_smooth_latest_latest_continuous_frame_id`,
+        `program_smooth_latest_selected_minus_rendered_lag`,
+        `program_smooth_latest_selected_minus_latest_continuous_lag`,
+        `program_smooth_latest_rendered_minus_latest_continuous_gap`,
+        `program_smooth_latest_source_mismatch_count`,
+        `program_smooth_latest_stale_reuse_count`,
+        `program_smooth_latest_cache_age_ms`, and
+        `program_smooth_latest_frame_age_ms`.
+      - marker improvement status:
+        `large-corner-band-v2` is now recorded in the next rerun phase, but a
+        repo-backed human-visible `P2` / not-`P1` confirmation is still
+        pending
+    - lag-focused validation checklist for any future rerun:
       - improved marker is visible and matches the selected source identity
       - client summaries include `validation_source_marker_style` and
         `validation_source_marker_size`
@@ -647,9 +652,9 @@ Validated command examples for the Program path:
       - `program_output_missing_after_first_render_count`
       - reusable manual OBS safety template is fully filled in
     - status:
-      ProgramOutput closeout stays blocked until the improved marker rerun
-      completes selected-source visual verification and lag criteria improve or
-      are otherwise accepted.
+      ProgramOutput closeout stays blocked until the blocker audit is updated;
+      current blockers still include lag `Fail` and non-`PASS` selected-source
+      visual verification.
   - OBS capture safety:
     - latest OBS target separation was correct
     - OBS remains manual and can still be pointed at the wrong window

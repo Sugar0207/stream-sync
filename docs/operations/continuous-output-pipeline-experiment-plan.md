@@ -1362,86 +1362,63 @@ Current limitations:
     steady-state fallback
 - Latest completed-template criteria-based ProgramOutput validation rerun:
   - log dir:
-    `S:\stream-sync\manual-logs\program-output-criteria-validation-20260605-235356`
+    `D:\stream-sync\manual-logs\program-output-criteria-validation-20260606-001029`
   - overall ProgramOutput criteria-based validation:
-    `WARNING`, not `PASS`
+    `FAIL`, not `PASS`
   - OBS safety:
     `PASS`
   - Program cleanliness:
     `PASS`
   - lag criteria:
-    `Warning`
+    `Fail`
   - selected-source visual verification:
-    `incomplete / WARNING`
+    `WARNING`
   - retained good facts:
     selected source diagnostics still resolved to `player2`, client marker
-    diagnostics still showed `P1` / `P2`, OBS captured only
-    `StreamSync Program Output`, `StreamSync 4-view Output` was not captured
-    and was hidden in the Program scene, Program had no 4-view / border /
-    debug UI / Preview label, black / placeholder / after-first missing stayed
-    `0`, perceived stutter was small, and startup bootstrap remained
+    diagnostics still showed `P1` / `P2`, Program black / placeholder /
+    after-first missing stayed `0`, and startup bootstrap remained
     startup-only
-  - warning reasons:
-    lag/gap worsened to `12 / 12 / 12`,
-    Program FPS fell to `20.796`,
-    and the validation markers were too mechanical / not human-readable enough
-    for P1 / P2 to be distinguished by human OBS inspection
+  - fail reasons:
+    lag/gap worsened again from the earlier `12 / 12 / 12` warning run to
+    `56 / 56 / 56`, while Program FPS only recovered to `21.362`, which is
+    still insufficient to offset the lag failure
+  - selected-source limitation:
+    repo-backed manual visual evidence still does not explicitly record that
+    `P2` was human-visible in Program and `P1` was absent from Program, so the
+    rerun does not upgrade selected-source visual verification to `PASS`
   - result handling:
-    OBS safety and Program cleanliness are `PASS`, but the run is not a
-    ProgramOutput `PASS` because selected-source visual verification is
-    incomplete and lag is only `Warning`
-  - marker implementation update:
-    validation-only source marker visibility is improved with
-    `validation_source_marker_style=large-corner-band-v2` and
-    `validation_source_marker_size`. The marker remains opt-in and source-side;
+    OBS safety and Program cleanliness remain `PASS`, but the rerun is a
+    ProgramOutput `FAIL` because lag crossed the draft failure threshold and
+    selected-source visual verification is still not `PASS`
+  - marker implementation status:
+    the improved validation-only source marker phase is now represented by a
+    recorded rerun; marker behavior remains opt-in and source-side, and
     ProgramOutput still gets no overlay, watermark, Preview label, or 4-view
     Program fallback.
-  - current improved-marker status:
-    no repo-backed completed manual rerun with `large-corner-band-v2` is
-    recorded yet, so the current criteria-based classification remains the
-    carried-forward `WARNING` until a human-visible `P2` / not-`P1` Program
-    check is captured
 - Next candidate order:
-  1. Rerun criteria-based validation using the improved marker:
-     - improved marker visible and correct source identity
-     - client summary includes `validation_source_marker_style` and
-       `validation_source_marker_size`
-     - OBS ProgramOutput only
-     - no 4-view / border / debug UI / Preview label in Program
-     - black / placeholder counts
-     - perceived stutter
-     - `program_selected_source_frame_lag`
-     - `program_continuous_selected_frame_lag`
-     - `continuous_decode_latest_selected_to_output_frame_gap`
-     - `program_render_effective_fps`
-     - one-shot fallback count and whether it is startup-only
-     - fully completed manual OBS safety template
-  2. Apply the OBS ProgramOutput capture safety procedure in the same rerun:
-     - check the OBS scene/source list before validation
-     - verify only `StreamSync Program Output` is captured
-     - verify `StreamSync 4-view Output` is hidden, removed, or not present in
-       the Program scene
-     - allow `StreamSync 4-view Output` to remain visible for operator
-       monitoring outside the Program scene
-     - verify no Preview / multiview capture source is present in the Program
-       scene
-     - verify the ProgramOutput window title
-     - classify the run as `PASS`, `WARNING`, or `FAIL`
+  1. Rerun the same smooth-latest criteria validation with the new
+     `program_smooth_latest_*` diagnostics. The code investigation indicates
+     the latest `56 / 56 / 56` most likely means the latest matching continuous
+     decoded frame and Program-rendered frame are both 56 frames behind the
+     selected source frame. The next rerun must confirm whether that is caused
+     by continuous decoder output lag, feed cadence / queue backlog, FFmpeg
+     throughput/stdout drain, stale last-valid reuse, or source mismatch.
+  2. Preserve repo-backed manual visual evidence for `P2` visible / not-`P1`
+     in Program, or move to marker/source visual strategy next if the marker
+     was still hard to read in practice.
   3. Continue ProgramOutput non-FPS blocker audit and closeout criteria
      definition: OBS capture safety run evidence, Program-first validation vs
      final operator mode, diagnostics completeness, and long-run stability.
-  4. If lag worsening repeats, start a focused investigation into why
-     smooth-latest moved from the earlier `Good` reference to `12 / 12 / 12`.
-  5. Keep the production operator Preview requirement active while same-loop
+  4. Keep the production operator Preview requirement active while same-loop
      Preview cadence/runtime tuning stays paused; current Preview is stable
      snapshot-only and future work may move to a separate cadence/runtime or a
      lighter renderer.
-  6. Program source switching over hotkey/control pipe later, after
+  5. Program source switching over hotkey/control pipe later, after
      ProgramOutput criteria are defined.
-  7. human-side `no-scale-bgra` A/B rerun for the scale path split slice
-  8. reader/completed latency breakdown diagnostics if no-scale evidence is
+  6. human-side `no-scale-bgra` A/B rerun for the scale path split slice
+  7. reader/completed latency breakdown diagnostics if no-scale evidence is
      ambiguous
-  9. direct BGR24 render path docs-first impact review only
+  8. direct BGR24 render path docs-first impact review only
 - The `no-scale-bgra` code slice is already implemented; do not broaden it
   before runtime evidence.
 - Keep one-shot suppression as strong contributor evidence, but not the current

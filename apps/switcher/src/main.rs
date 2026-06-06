@@ -2594,6 +2594,16 @@ struct SwitcherFourViewTwoRealHandoffPreviewLoopSummary {
     program_continuous_latest_output_age_ms: Option<u128>,
     program_decode_fps: String,
     program_selected_source_frame_lag: Option<u64>,
+    program_smooth_latest_selected_frame_id: Option<u64>,
+    program_smooth_latest_rendered_frame_id: Option<u64>,
+    program_smooth_latest_latest_continuous_frame_id: Option<u64>,
+    program_smooth_latest_selected_minus_rendered_lag: Option<u64>,
+    program_smooth_latest_selected_minus_latest_continuous_lag: Option<u64>,
+    program_smooth_latest_rendered_minus_latest_continuous_gap: Option<u64>,
+    program_smooth_latest_source_mismatch_count: u32,
+    program_smooth_latest_stale_reuse_count: u32,
+    program_smooth_latest_cache_age_ms: Option<u128>,
+    program_smooth_latest_frame_age_ms: Option<u128>,
     program_first_validation_enabled: bool,
     program_first_suppressed_preview_one_shot_decode_count: u32,
     program_first_suppressed_preview_one_shot_decode_slot_counts: String,
@@ -5601,6 +5611,7 @@ impl<'a, Runtime> TimedSwitcherH264DecodeRuntime<'a, Runtime> {
             selection,
             decoded_frame,
             frame_id,
+            selected_frame_id,
             selected_frame_lag: selected_frame_id.map(|selected| selected.saturating_sub(frame_id)),
             output_age_ms,
         })
@@ -7504,6 +7515,16 @@ struct TwoRealProgramOutputTickDiagnostics {
     continuous_latest_frame_id: Option<u64>,
     continuous_selected_frame_lag: Option<u64>,
     continuous_latest_output_age_ms: Option<u128>,
+    smooth_latest_selected_frame_id: Option<u64>,
+    smooth_latest_rendered_frame_id: Option<u64>,
+    smooth_latest_latest_continuous_frame_id: Option<u64>,
+    smooth_latest_selected_minus_rendered_lag: Option<u64>,
+    smooth_latest_selected_minus_latest_continuous_lag: Option<u64>,
+    smooth_latest_rendered_minus_latest_continuous_gap: Option<u64>,
+    smooth_latest_source_mismatch: bool,
+    smooth_latest_stale_reuse: bool,
+    smooth_latest_cache_age_ms: Option<u128>,
+    smooth_latest_frame_age_ms: Option<u128>,
     placeholder_rendered: bool,
     black_frame_rendered: bool,
     latest_valid_frame: Option<TwoRealCachedProgramOutputFrame>,
@@ -7515,6 +7536,7 @@ struct TwoRealProgramOutputTickDiagnostics {
 struct TwoRealCachedProgramOutputFrame {
     selection: SwitcherProgramSelection,
     decoded_frame: stream_sync_switcher::SwitcherDecodedFrame,
+    frame_id: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -7522,6 +7544,7 @@ struct TwoRealProgramContinuousLatestFrame {
     selection: SwitcherProgramSelection,
     decoded_frame: stream_sync_switcher::SwitcherDecodedFrame,
     frame_id: u64,
+    selected_frame_id: Option<u64>,
     selected_frame_lag: Option<u64>,
     output_age_ms: Option<u128>,
 }
@@ -7623,11 +7646,13 @@ struct TwoRealProgramOutputRenderFrameChoice<'a> {
     continuous_latest_frame_id: Option<u64>,
     continuous_selected_frame_lag: Option<u64>,
     continuous_latest_output_age_ms: Option<u128>,
+    rendered_frame_id: Option<u64>,
 }
 
 fn select_two_real_program_output_render_frame<'a>(
     program_continuous_decode_mode: ProgramContinuousDecodeMode,
     selection: &SwitcherProgramSelection,
+    selected_frame_id: Option<u64>,
     selected_decoded_frame: Option<&'a stream_sync_switcher::SwitcherDecodedFrame>,
     last_valid_program_frame: Option<&'a TwoRealCachedProgramOutputFrame>,
     program_continuous_latest_frame: Option<&'a TwoRealProgramContinuousLatestFrame>,
@@ -7652,6 +7677,7 @@ fn select_two_real_program_output_render_frame<'a>(
                 continuous_latest_frame_id: Some(latest.frame_id),
                 continuous_selected_frame_lag: latest.selected_frame_lag,
                 continuous_latest_output_age_ms: latest.output_age_ms,
+                rendered_frame_id: Some(latest.frame_id),
             };
         }
         if let Some(cached) = matching_last_valid {
@@ -7665,6 +7691,7 @@ fn select_two_real_program_output_render_frame<'a>(
                 continuous_latest_frame_id: None,
                 continuous_selected_frame_lag: None,
                 continuous_latest_output_age_ms: None,
+                rendered_frame_id: cached.frame_id,
             };
         }
         if let Some(decoded) = selected_decoded_frame {
@@ -7678,6 +7705,7 @@ fn select_two_real_program_output_render_frame<'a>(
                 continuous_latest_frame_id: None,
                 continuous_selected_frame_lag: None,
                 continuous_latest_output_age_ms: None,
+                rendered_frame_id: selected_frame_id,
             };
         }
     } else {
@@ -7692,6 +7720,7 @@ fn select_two_real_program_output_render_frame<'a>(
                 continuous_latest_frame_id: None,
                 continuous_selected_frame_lag: None,
                 continuous_latest_output_age_ms: None,
+                rendered_frame_id: selected_frame_id,
             };
         }
         if let Some(cached) = matching_last_valid {
@@ -7705,6 +7734,7 @@ fn select_two_real_program_output_render_frame<'a>(
                 continuous_latest_frame_id: None,
                 continuous_selected_frame_lag: None,
                 continuous_latest_output_age_ms: None,
+                rendered_frame_id: cached.frame_id,
             };
         }
     }
@@ -7719,7 +7749,20 @@ fn select_two_real_program_output_render_frame<'a>(
         continuous_latest_frame_id: None,
         continuous_selected_frame_lag: None,
         continuous_latest_output_age_ms: None,
+        rendered_frame_id: None,
     }
+}
+
+fn optional_frame_lag(newer_frame_id: Option<u64>, older_frame_id: Option<u64>) -> Option<u64> {
+    newer_frame_id
+        .zip(older_frame_id)
+        .map(|(newer, older)| newer.saturating_sub(older))
+}
+
+fn optional_frame_gap(left_frame_id: Option<u64>, right_frame_id: Option<u64>) -> Option<u64> {
+    left_frame_id
+        .zip(right_frame_id)
+        .map(|(left, right)| left.max(right) - left.min(right))
 }
 
 fn render_two_real_program_output_if_enabled<RenderRuntime>(
@@ -7765,6 +7808,16 @@ where
             continuous_latest_frame_id: None,
             continuous_selected_frame_lag: None,
             continuous_latest_output_age_ms: None,
+            smooth_latest_selected_frame_id: None,
+            smooth_latest_rendered_frame_id: None,
+            smooth_latest_latest_continuous_frame_id: None,
+            smooth_latest_selected_minus_rendered_lag: None,
+            smooth_latest_selected_minus_latest_continuous_lag: None,
+            smooth_latest_rendered_minus_latest_continuous_gap: None,
+            smooth_latest_source_mismatch: false,
+            smooth_latest_stale_reuse: false,
+            smooth_latest_cache_age_ms: None,
+            smooth_latest_frame_age_ms: None,
             placeholder_rendered: false,
             black_frame_rendered: false,
             latest_valid_frame: None,
@@ -7792,6 +7845,16 @@ where
             continuous_latest_frame_id: None,
             continuous_selected_frame_lag: None,
             continuous_latest_output_age_ms: None,
+            smooth_latest_selected_frame_id: None,
+            smooth_latest_rendered_frame_id: None,
+            smooth_latest_latest_continuous_frame_id: None,
+            smooth_latest_selected_minus_rendered_lag: None,
+            smooth_latest_selected_minus_latest_continuous_lag: None,
+            smooth_latest_rendered_minus_latest_continuous_gap: None,
+            smooth_latest_source_mismatch: false,
+            smooth_latest_stale_reuse: false,
+            smooth_latest_cache_age_ms: None,
+            smooth_latest_frame_age_ms: None,
             placeholder_rendered: false,
             black_frame_rendered: false,
             latest_valid_frame: None,
@@ -7811,15 +7874,29 @@ where
         } else {
             fallback_program_output_selection_and_frame(pre_composition, slots, real_slot_indices)
         };
+    let selected_frame_id =
+        selected_program_frame_id_from_pre_composition(pre_composition, &selection);
     let effective_selected_decoded_frame =
         selected_decoded_frame.or(program_startup_bootstrap_frame);
     let render_choice = select_two_real_program_output_render_frame(
         program_continuous_decode_mode,
         &selection,
+        selected_frame_id,
         effective_selected_decoded_frame,
         last_valid_program_frame,
         program_continuous_latest_frame,
     );
+    let smooth_latest_active =
+        program_continuous_decode_mode == ProgramContinuousDecodeMode::SmoothLatest;
+    let matching_latest_continuous_frame_id = program_continuous_latest_frame
+        .filter(|latest| latest_program_frame_matches_selection(latest, &selection))
+        .map(|latest| latest.frame_id);
+    let smooth_latest_source_mismatch = smooth_latest_active
+        && program_continuous_latest_frame.is_some()
+        && matching_latest_continuous_frame_id.is_none();
+    let smooth_latest_cache_age_ms = smooth_latest_active
+        .then_some(render_choice.continuous_latest_output_age_ms)
+        .flatten();
     let used_startup_bootstrap = program_startup_bootstrap_frame.is_some()
         && selected_decoded_frame.is_none()
         && render_choice.used_one_shot_fallback;
@@ -7869,6 +7946,37 @@ where
         continuous_latest_frame_id: render_choice.continuous_latest_frame_id,
         continuous_selected_frame_lag: render_choice.continuous_selected_frame_lag,
         continuous_latest_output_age_ms: render_choice.continuous_latest_output_age_ms,
+        smooth_latest_selected_frame_id: smooth_latest_active
+            .then_some(selected_frame_id)
+            .flatten(),
+        smooth_latest_rendered_frame_id: smooth_latest_active
+            .then_some(render_choice.rendered_frame_id)
+            .flatten(),
+        smooth_latest_latest_continuous_frame_id: smooth_latest_active
+            .then_some(matching_latest_continuous_frame_id)
+            .flatten(),
+        smooth_latest_selected_minus_rendered_lag: smooth_latest_active
+            .then_some(optional_frame_lag(
+                selected_frame_id,
+                render_choice.rendered_frame_id,
+            ))
+            .flatten(),
+        smooth_latest_selected_minus_latest_continuous_lag: smooth_latest_active
+            .then_some(optional_frame_lag(
+                selected_frame_id,
+                matching_latest_continuous_frame_id,
+            ))
+            .flatten(),
+        smooth_latest_rendered_minus_latest_continuous_gap: smooth_latest_active
+            .then_some(optional_frame_gap(
+                render_choice.rendered_frame_id,
+                matching_latest_continuous_frame_id,
+            ))
+            .flatten(),
+        smooth_latest_source_mismatch,
+        smooth_latest_stale_reuse: smooth_latest_active && render_choice.reused_previous_frame,
+        smooth_latest_cache_age_ms,
+        smooth_latest_frame_age_ms: smooth_latest_cache_age_ms,
         placeholder_rendered: false,
         black_frame_rendered: false,
         latest_valid_frame: if !render_choice.reused_previous_frame
@@ -7880,6 +7988,7 @@ where
                 .map(|decoded_frame| TwoRealCachedProgramOutputFrame {
                     selection: selection.clone(),
                     decoded_frame: decoded_frame.clone(),
+                    frame_id: render_choice.rendered_frame_id,
                 })
         } else {
             None
@@ -8965,6 +9074,16 @@ where
     let mut program_continuous_latest_frame_id = None;
     let mut program_continuous_selected_frame_lag = None;
     let mut program_continuous_latest_output_age_ms = None;
+    let mut program_smooth_latest_selected_frame_id = None;
+    let mut program_smooth_latest_rendered_frame_id = None;
+    let mut program_smooth_latest_latest_continuous_frame_id = None;
+    let mut program_smooth_latest_selected_minus_rendered_lag = None;
+    let mut program_smooth_latest_selected_minus_latest_continuous_lag = None;
+    let mut program_smooth_latest_rendered_minus_latest_continuous_gap = None;
+    let mut program_smooth_latest_source_mismatch_count = 0u32;
+    let mut program_smooth_latest_stale_reuse_count = 0u32;
+    let mut program_smooth_latest_cache_age_ms = None;
+    let mut program_smooth_latest_frame_age_ms = None;
     let mut program_output_last_result_kind = if program_output_window_enabled {
         "NotRenderedYet"
     } else {
@@ -9901,6 +10020,62 @@ where
         {
             program_continuous_latest_output_age_ms =
                 program_output_tick.continuous_latest_output_age_ms;
+        }
+        if program_output_tick
+            .smooth_latest_selected_frame_id
+            .is_some()
+        {
+            program_smooth_latest_selected_frame_id =
+                program_output_tick.smooth_latest_selected_frame_id;
+        }
+        if program_output_tick
+            .smooth_latest_rendered_frame_id
+            .is_some()
+        {
+            program_smooth_latest_rendered_frame_id =
+                program_output_tick.smooth_latest_rendered_frame_id;
+        }
+        if program_output_tick
+            .smooth_latest_latest_continuous_frame_id
+            .is_some()
+        {
+            program_smooth_latest_latest_continuous_frame_id =
+                program_output_tick.smooth_latest_latest_continuous_frame_id;
+        }
+        if program_output_tick
+            .smooth_latest_selected_minus_rendered_lag
+            .is_some()
+        {
+            program_smooth_latest_selected_minus_rendered_lag =
+                program_output_tick.smooth_latest_selected_minus_rendered_lag;
+        }
+        if program_output_tick
+            .smooth_latest_selected_minus_latest_continuous_lag
+            .is_some()
+        {
+            program_smooth_latest_selected_minus_latest_continuous_lag =
+                program_output_tick.smooth_latest_selected_minus_latest_continuous_lag;
+        }
+        if program_output_tick
+            .smooth_latest_rendered_minus_latest_continuous_gap
+            .is_some()
+        {
+            program_smooth_latest_rendered_minus_latest_continuous_gap =
+                program_output_tick.smooth_latest_rendered_minus_latest_continuous_gap;
+        }
+        if program_output_tick.smooth_latest_source_mismatch {
+            program_smooth_latest_source_mismatch_count =
+                program_smooth_latest_source_mismatch_count.saturating_add(1);
+        }
+        if program_output_tick.smooth_latest_stale_reuse {
+            program_smooth_latest_stale_reuse_count =
+                program_smooth_latest_stale_reuse_count.saturating_add(1);
+        }
+        if program_output_tick.smooth_latest_cache_age_ms.is_some() {
+            program_smooth_latest_cache_age_ms = program_output_tick.smooth_latest_cache_age_ms;
+        }
+        if program_output_tick.smooth_latest_frame_age_ms.is_some() {
+            program_smooth_latest_frame_age_ms = program_output_tick.smooth_latest_frame_age_ms;
         }
         if program_output_tick.placeholder_rendered {
             program_output_placeholder_render_count =
@@ -11338,6 +11513,16 @@ where
         } else {
             None
         },
+        program_smooth_latest_selected_frame_id,
+        program_smooth_latest_rendered_frame_id,
+        program_smooth_latest_latest_continuous_frame_id,
+        program_smooth_latest_selected_minus_rendered_lag,
+        program_smooth_latest_selected_minus_latest_continuous_lag,
+        program_smooth_latest_rendered_minus_latest_continuous_gap,
+        program_smooth_latest_source_mismatch_count,
+        program_smooth_latest_stale_reuse_count,
+        program_smooth_latest_cache_age_ms,
+        program_smooth_latest_frame_age_ms,
         program_first_validation_enabled: program_first_validation_mode,
         program_first_suppressed_preview_one_shot_decode_count: timing
             .program_first_suppressed_preview_one_shot_decode_count,
@@ -16153,7 +16338,7 @@ fn format_four_view_two_real_handoff_preview_loop_summary(
         format_optional_u32(summary.output_height),
     );
     format!(
-        "{summary_line} continuous_decode_ffmpeg_low_latency_args_enabled={} continuous_decode_ffmpeg_probe_args_enabled={} continuous_decode_ffmpeg_loglevel={} continuous_decode_stdout_first_byte_seen={} continuous_decode_stdout_first_byte_elapsed_ms={} continuous_decode_stdout_partial_bytes_read={} continuous_decode_stdout_partial_read_count={} continuous_decode_stdout_expected_frame_bytes={} continuous_decode_stdout_read_waiting_for_full_frame={} continuous_feed_enabled={} continuous_feed_attempt_count={} continuous_feed_handoff_request_count={} continuous_feed_frame_received_count={} continuous_feed_no_frame_count={} continuous_feed_handoff_error_count={} continuous_feed_enqueued_count={} continuous_feed_skipped_count={} continuous_feed_skip_reason_counts={} continuous_feed_dropped_stale_input_count={} continuous_feed_latest_received_frame_id={} continuous_feed_latest_enqueued_frame_id={} continuous_decode_input_from_feeder_count={} continuous_decode_input_from_render_demand_count={} continuous_decode_feeder_lag_to_selected={} continuous_decode_render_exact_hit_count={} continuous_decode_render_miss_stale_count={} continuous_decode_render_miss_not_ready_count={} continuous_decode_bounded_lookup_enabled={} continuous_decode_bounded_lookup_allowed_lag_frames={} continuous_decode_bounded_lookup_hit_count={} continuous_decode_bounded_lookup_used_frame_id={} continuous_decode_bounded_lookup_requested_frame_id={} continuous_decode_bounded_lookup_lag_frames={} continuous_decode_bounded_lookup_rejected_stale_count={} continuous_decode_bounded_lookup_rejected_future_count={} continuous_decode_bounded_lookup_rejected_not_ready_count={} continuous_decode_output_availability_not_ready_count={} continuous_decode_output_availability_stale_count={} continuous_decode_output_availability_future_count={} continuous_decode_bounded_lookup_fallback_to_one_shot_count={} continuous_decode_render_used_exact_count={} continuous_decode_render_used_bounded_lag_count={} continuous_decode_pending_correspondence_count={} continuous_decode_pending_correspondence_age_ms_max={} continuous_decode_pending_correspondence_age_ms_avg={} continuous_decode_pending_correspondence_oldest_frame_id={} continuous_decode_pending_correspondence_newest_frame_id={} continuous_decode_completed_correspondence_count={} continuous_decode_completed_correspondence_latency_ms_avg={} continuous_decode_completed_correspondence_latency_ms_max={} continuous_decode_completed_correspondence_latency_slow_count={} continuous_decode_completed_correspondence_latency_slow_threshold_ms={} continuous_decode_completed_correspondence_frame_id_min={} continuous_decode_completed_correspondence_frame_id_max={} continuous_decode_completed_correspondence_latest_latency_ms={} continuous_decode_latest_input_minus_latest_output_lag={} continuous_decode_latest_input_to_output_frame_gap={} continuous_decode_pending_correspondence_frame_id_min={} continuous_decode_pending_correspondence_frame_id_max={} continuous_decode_input_to_output_lag_frames_max={} continuous_decode_output_lag_to_selected_frames={} continuous_decode_latest_selected_to_output_frame_gap={} continuous_decode_output_throughput_fps={} continuous_decode_reader_full_frame_elapsed_ms_max={} continuous_decode_reader_full_frame_elapsed_ms_avg={} continuous_decode_reader_full_frame_slow_count={} continuous_decode_reader_full_frame_slow_threshold_ms={} continuous_decode_output_bytes_total={} continuous_decode_output_bytes_per_sec={} continuous_decode_output_frame_interval_ms_avg={} continuous_decode_output_frame_interval_ms_max={} continuous_decode_stdout_read_throughput_bytes_per_ms={} continuous_decode_ffmpeg_scale_enabled={} continuous_decode_ffmpeg_output_pixel_format={} continuous_decode_output_pipeline_experiment_mode={} continuous_decode_output_pipeline_scale_mode={} continuous_decode_output_source_width={} continuous_decode_output_source_height={} continuous_decode_output_scaled_width={} continuous_decode_output_scaled_height={} continuous_decode_output_scale_removed_count={} continuous_decode_output_scale_path_experiment_enabled={} continuous_decode_output_bytes_per_frame={} continuous_decode_output_pipe_bytes_saved_per_frame={} continuous_decode_output_pixel_convert_elapsed_ms={} continuous_decode_output_pixel_convert_elapsed_ms_max={} continuous_decode_output_pixel_convert_count={} continuous_decode_output_pixel_convert_buffer_reuse_count={} continuous_decode_output_pixel_convert_buffer_allocation_count={} continuous_decode_output_pixel_convert_bytes_written_total={} continuous_decode_output_pixel_convert_bytes_written_per_frame={} continuous_decode_output_pixel_convert_mode={} continuous_decode_competing_one_shot_decode_elapsed_ms={} continuous_decode_competing_one_shot_attempt_count={} continuous_decode_slot0_one_shot_suppression_enabled={} continuous_decode_slot0_one_shot_suppressed_count={} continuous_decode_slot0_one_shot_suppressed_reason_counts={} continuous_decode_slot0_one_shot_suppressed_render_safety_counts={} continuous_decode_slot0_one_shot_suppressed_continuous_not_ready_count={} continuous_decode_slot0_one_shot_suppressed_stale_count={} continuous_decode_queue_drop_reason_counts={} program_output_enabled={} program_output_selection_mode={} program_output_requested_client_id={} program_output_render_count={} program_output_missing_selected_source_count={} program_output_missing_before_first_render_count={} program_output_missing_after_first_render_count={} program_output_reused_previous_frame_count={} program_output_placeholder_render_count={} program_output_black_frame_render_count={} program_output_first_render_attempt_index={} program_output_first_render_elapsed_ms={} program_output_missing_selected_source_reason={} program_output_last_result_kind={} program_output_selected_client_id={} program_output_selected_slot_index={} program_output_window_title={} program_selection_resolved_elapsed_ms={} program_continuous_source_resolved_elapsed_ms={} program_first_source_frame_seen_elapsed_ms={} program_first_continuous_input_elapsed_ms={} program_first_continuous_output_elapsed_ms={} program_first_renderable_decoded_frame_elapsed_ms={} program_first_render_waiting_for_decode_count={} program_first_render_missing_reason_counts={} program_startup_one_shot_fallback_allowed={} program_startup_one_shot_fallback_attempt_count={} program_startup_one_shot_fallback_suppressed_count={} program_startup_one_shot_fallback_blocked_reason_counts={} program_startup_selected_frame_keyframe_available_count={} program_startup_selected_frame_source_counts={} program_startup_retained_keyframe_available_count={} program_startup_one_shot_candidate_count={} program_startup_one_shot_candidate_rejected_count={} program_startup_one_shot_candidate_rejected_reason_counts={} program_startup_bootstrap_enabled={} program_startup_bootstrap_attempt_count={} program_startup_bootstrap_success_count={} program_startup_bootstrap_elapsed_ms={} program_startup_bootstrap_decode_attempt_elapsed_ms={} program_startup_bootstrap_decode_error_counts={} program_startup_bootstrap_ffmpeg_exit_status={} program_startup_bootstrap_ffmpeg_stderr_summary={} program_startup_bootstrap_payload_bytes_min={} program_startup_bootstrap_payload_bytes_max={} program_startup_bootstrap_payload_bytes_avg={} program_startup_bootstrap_payload_nal_kinds={} program_startup_bootstrap_payload_has_sps_count={} program_startup_bootstrap_payload_has_pps_count={} program_startup_bootstrap_payload_has_idr_count={} program_startup_bootstrap_frame_id_min={} program_startup_bootstrap_frame_id_max={} program_startup_bootstrap_slot_counts={} program_startup_bootstrap_client_counts={} program_startup_bootstrap_actual_decode_invoked_count={} program_startup_bootstrap_decode_skipped_before_invoke_count={} program_startup_bootstrap_source_counts={} program_startup_bootstrap_rejected_reason_counts={} program_startup_bootstrap_used_for_first_render={} program_startup_readiness_state={} program_selected_source_wait_elapsed_ms={} program_startup_waiting_for_selected_source_count={} program_startup_bootstrap_after_source_seen_elapsed_ms={} program_startup_selected_source_seen_count={} program_startup_continuous_pending_count={} program_startup_no_selected_source_count={} program_startup_no_decoded_frame_count={} program_startup_latest_continuous_available_count={} program_startup_latest_continuous_rejected_count={} program_startup_source_identity_mismatch_count={} program_decode_mode={} program_continuous_decode_enabled={} program_continuous_decode_mode={} program_continuous_decode_output_frame_count={} program_continuous_decode_lookup_hit_count={} program_continuous_decode_lookup_miss_count={} program_render_used_continuous_decoded_count={} program_render_used_continuous_latest_count={} program_render_used_continuous_exact_count={} program_render_used_continuous_stale_but_accepted_count={} program_render_used_one_shot_fallback_count={} program_continuous_latest_frame_id={} program_continuous_selected_frame_lag={} program_continuous_latest_output_age_ms={} program_decode_fps={} program_selected_source_frame_lag={} program_first_validation_enabled={} program_first_suppressed_preview_one_shot_decode_count={} program_first_suppressed_preview_one_shot_decode_slot_counts={} program_first_program_only_decode_path_enabled={} program_first_remaining_one_shot_decode_count={} program_first_preview_visible={} program_first_preview_refresh_interval={} program_first_preview_refresh_count={} program_first_preview_suppressed_count={} operator_low_cost_preview_enabled={} operator_preview_refresh_interval_ticks={} operator_preview_refresh_attempt_count={} operator_preview_refresh_success_count={} operator_preview_refresh_skipped_count={} operator_preview_used_stale_frame_count={} operator_preview_forced_one_shot_decode_count={} operator_preview_render_effective_fps={} operator_preview_decode_refresh_enabled={} operator_preview_decode_refresh_interval_ticks={} operator_preview_decode_refresh_attempt_count={} operator_preview_decode_refresh_success_count={} operator_preview_decode_refresh_skipped_count={} operator_preview_decode_refresh_source_counts={} operator_preview_decode_refresh_elapsed_ms={} operator_preview_decode_refresh_budget_exceeded_count={} operator_preview_non_program_visible_count={} operator_preview_reused_program_frame_count={} operator_preview_program_slot_visible_count={} operator_preview_program_slot_reuse_source={} operator_preview_program_slot_black_count={} operator_preview_snapshot_retention_enabled={} operator_preview_snapshot_reuse_count={} operator_preview_snapshot_reuse_slot_counts={} operator_preview_snapshot_created_count={} operator_preview_snapshot_created_slot_counts={} operator_preview_placeholder_avoided_by_snapshot_count={} operator_preview_slot_black_after_snapshot_count={} operator_preview_program_fps_impact_estimate={} preview_compose_skipped_for_program_count={} preview_compose_reused_for_program_count={} program_render_loop_attempt_count={} program_window_render_success_count={} program_window_render_failure_count={} program_render_effective_fps={} effective_program_render_fps={}",
+        "{summary_line} continuous_decode_ffmpeg_low_latency_args_enabled={} continuous_decode_ffmpeg_probe_args_enabled={} continuous_decode_ffmpeg_loglevel={} continuous_decode_stdout_first_byte_seen={} continuous_decode_stdout_first_byte_elapsed_ms={} continuous_decode_stdout_partial_bytes_read={} continuous_decode_stdout_partial_read_count={} continuous_decode_stdout_expected_frame_bytes={} continuous_decode_stdout_read_waiting_for_full_frame={} continuous_feed_enabled={} continuous_feed_attempt_count={} continuous_feed_handoff_request_count={} continuous_feed_frame_received_count={} continuous_feed_no_frame_count={} continuous_feed_handoff_error_count={} continuous_feed_enqueued_count={} continuous_feed_skipped_count={} continuous_feed_skip_reason_counts={} continuous_feed_dropped_stale_input_count={} continuous_feed_latest_received_frame_id={} continuous_feed_latest_enqueued_frame_id={} continuous_decode_input_from_feeder_count={} continuous_decode_input_from_render_demand_count={} continuous_decode_feeder_lag_to_selected={} continuous_decode_render_exact_hit_count={} continuous_decode_render_miss_stale_count={} continuous_decode_render_miss_not_ready_count={} continuous_decode_bounded_lookup_enabled={} continuous_decode_bounded_lookup_allowed_lag_frames={} continuous_decode_bounded_lookup_hit_count={} continuous_decode_bounded_lookup_used_frame_id={} continuous_decode_bounded_lookup_requested_frame_id={} continuous_decode_bounded_lookup_lag_frames={} continuous_decode_bounded_lookup_rejected_stale_count={} continuous_decode_bounded_lookup_rejected_future_count={} continuous_decode_bounded_lookup_rejected_not_ready_count={} continuous_decode_output_availability_not_ready_count={} continuous_decode_output_availability_stale_count={} continuous_decode_output_availability_future_count={} continuous_decode_bounded_lookup_fallback_to_one_shot_count={} continuous_decode_render_used_exact_count={} continuous_decode_render_used_bounded_lag_count={} continuous_decode_pending_correspondence_count={} continuous_decode_pending_correspondence_age_ms_max={} continuous_decode_pending_correspondence_age_ms_avg={} continuous_decode_pending_correspondence_oldest_frame_id={} continuous_decode_pending_correspondence_newest_frame_id={} continuous_decode_completed_correspondence_count={} continuous_decode_completed_correspondence_latency_ms_avg={} continuous_decode_completed_correspondence_latency_ms_max={} continuous_decode_completed_correspondence_latency_slow_count={} continuous_decode_completed_correspondence_latency_slow_threshold_ms={} continuous_decode_completed_correspondence_frame_id_min={} continuous_decode_completed_correspondence_frame_id_max={} continuous_decode_completed_correspondence_latest_latency_ms={} continuous_decode_latest_input_minus_latest_output_lag={} continuous_decode_latest_input_to_output_frame_gap={} continuous_decode_pending_correspondence_frame_id_min={} continuous_decode_pending_correspondence_frame_id_max={} continuous_decode_input_to_output_lag_frames_max={} continuous_decode_output_lag_to_selected_frames={} continuous_decode_latest_selected_to_output_frame_gap={} continuous_decode_output_throughput_fps={} continuous_decode_reader_full_frame_elapsed_ms_max={} continuous_decode_reader_full_frame_elapsed_ms_avg={} continuous_decode_reader_full_frame_slow_count={} continuous_decode_reader_full_frame_slow_threshold_ms={} continuous_decode_output_bytes_total={} continuous_decode_output_bytes_per_sec={} continuous_decode_output_frame_interval_ms_avg={} continuous_decode_output_frame_interval_ms_max={} continuous_decode_stdout_read_throughput_bytes_per_ms={} continuous_decode_ffmpeg_scale_enabled={} continuous_decode_ffmpeg_output_pixel_format={} continuous_decode_output_pipeline_experiment_mode={} continuous_decode_output_pipeline_scale_mode={} continuous_decode_output_source_width={} continuous_decode_output_source_height={} continuous_decode_output_scaled_width={} continuous_decode_output_scaled_height={} continuous_decode_output_scale_removed_count={} continuous_decode_output_scale_path_experiment_enabled={} continuous_decode_output_bytes_per_frame={} continuous_decode_output_pipe_bytes_saved_per_frame={} continuous_decode_output_pixel_convert_elapsed_ms={} continuous_decode_output_pixel_convert_elapsed_ms_max={} continuous_decode_output_pixel_convert_count={} continuous_decode_output_pixel_convert_buffer_reuse_count={} continuous_decode_output_pixel_convert_buffer_allocation_count={} continuous_decode_output_pixel_convert_bytes_written_total={} continuous_decode_output_pixel_convert_bytes_written_per_frame={} continuous_decode_output_pixel_convert_mode={} continuous_decode_competing_one_shot_decode_elapsed_ms={} continuous_decode_competing_one_shot_attempt_count={} continuous_decode_slot0_one_shot_suppression_enabled={} continuous_decode_slot0_one_shot_suppressed_count={} continuous_decode_slot0_one_shot_suppressed_reason_counts={} continuous_decode_slot0_one_shot_suppressed_render_safety_counts={} continuous_decode_slot0_one_shot_suppressed_continuous_not_ready_count={} continuous_decode_slot0_one_shot_suppressed_stale_count={} continuous_decode_queue_drop_reason_counts={} program_output_enabled={} program_output_selection_mode={} program_output_requested_client_id={} program_output_render_count={} program_output_missing_selected_source_count={} program_output_missing_before_first_render_count={} program_output_missing_after_first_render_count={} program_output_reused_previous_frame_count={} program_output_placeholder_render_count={} program_output_black_frame_render_count={} program_output_first_render_attempt_index={} program_output_first_render_elapsed_ms={} program_output_missing_selected_source_reason={} program_output_last_result_kind={} program_output_selected_client_id={} program_output_selected_slot_index={} program_output_window_title={} program_selection_resolved_elapsed_ms={} program_continuous_source_resolved_elapsed_ms={} program_first_source_frame_seen_elapsed_ms={} program_first_continuous_input_elapsed_ms={} program_first_continuous_output_elapsed_ms={} program_first_renderable_decoded_frame_elapsed_ms={} program_first_render_waiting_for_decode_count={} program_first_render_missing_reason_counts={} program_startup_one_shot_fallback_allowed={} program_startup_one_shot_fallback_attempt_count={} program_startup_one_shot_fallback_suppressed_count={} program_startup_one_shot_fallback_blocked_reason_counts={} program_startup_selected_frame_keyframe_available_count={} program_startup_selected_frame_source_counts={} program_startup_retained_keyframe_available_count={} program_startup_one_shot_candidate_count={} program_startup_one_shot_candidate_rejected_count={} program_startup_one_shot_candidate_rejected_reason_counts={} program_startup_bootstrap_enabled={} program_startup_bootstrap_attempt_count={} program_startup_bootstrap_success_count={} program_startup_bootstrap_elapsed_ms={} program_startup_bootstrap_decode_attempt_elapsed_ms={} program_startup_bootstrap_decode_error_counts={} program_startup_bootstrap_ffmpeg_exit_status={} program_startup_bootstrap_ffmpeg_stderr_summary={} program_startup_bootstrap_payload_bytes_min={} program_startup_bootstrap_payload_bytes_max={} program_startup_bootstrap_payload_bytes_avg={} program_startup_bootstrap_payload_nal_kinds={} program_startup_bootstrap_payload_has_sps_count={} program_startup_bootstrap_payload_has_pps_count={} program_startup_bootstrap_payload_has_idr_count={} program_startup_bootstrap_frame_id_min={} program_startup_bootstrap_frame_id_max={} program_startup_bootstrap_slot_counts={} program_startup_bootstrap_client_counts={} program_startup_bootstrap_actual_decode_invoked_count={} program_startup_bootstrap_decode_skipped_before_invoke_count={} program_startup_bootstrap_source_counts={} program_startup_bootstrap_rejected_reason_counts={} program_startup_bootstrap_used_for_first_render={} program_startup_readiness_state={} program_selected_source_wait_elapsed_ms={} program_startup_waiting_for_selected_source_count={} program_startup_bootstrap_after_source_seen_elapsed_ms={} program_startup_selected_source_seen_count={} program_startup_continuous_pending_count={} program_startup_no_selected_source_count={} program_startup_no_decoded_frame_count={} program_startup_latest_continuous_available_count={} program_startup_latest_continuous_rejected_count={} program_startup_source_identity_mismatch_count={} program_decode_mode={} program_continuous_decode_enabled={} program_continuous_decode_mode={} program_continuous_decode_output_frame_count={} program_continuous_decode_lookup_hit_count={} program_continuous_decode_lookup_miss_count={} program_render_used_continuous_decoded_count={} program_render_used_continuous_latest_count={} program_render_used_continuous_exact_count={} program_render_used_continuous_stale_but_accepted_count={} program_render_used_one_shot_fallback_count={} program_continuous_latest_frame_id={} program_continuous_selected_frame_lag={} program_continuous_latest_output_age_ms={} program_decode_fps={} program_selected_source_frame_lag={} program_smooth_latest_selected_frame_id={} program_smooth_latest_rendered_frame_id={} program_smooth_latest_latest_continuous_frame_id={} program_smooth_latest_selected_minus_rendered_lag={} program_smooth_latest_selected_minus_latest_continuous_lag={} program_smooth_latest_rendered_minus_latest_continuous_gap={} program_smooth_latest_source_mismatch_count={} program_smooth_latest_stale_reuse_count={} program_smooth_latest_cache_age_ms={} program_smooth_latest_frame_age_ms={} program_first_validation_enabled={} program_first_suppressed_preview_one_shot_decode_count={} program_first_suppressed_preview_one_shot_decode_slot_counts={} program_first_program_only_decode_path_enabled={} program_first_remaining_one_shot_decode_count={} program_first_preview_visible={} program_first_preview_refresh_interval={} program_first_preview_refresh_count={} program_first_preview_suppressed_count={} operator_low_cost_preview_enabled={} operator_preview_refresh_interval_ticks={} operator_preview_refresh_attempt_count={} operator_preview_refresh_success_count={} operator_preview_refresh_skipped_count={} operator_preview_used_stale_frame_count={} operator_preview_forced_one_shot_decode_count={} operator_preview_render_effective_fps={} operator_preview_decode_refresh_enabled={} operator_preview_decode_refresh_interval_ticks={} operator_preview_decode_refresh_attempt_count={} operator_preview_decode_refresh_success_count={} operator_preview_decode_refresh_skipped_count={} operator_preview_decode_refresh_source_counts={} operator_preview_decode_refresh_elapsed_ms={} operator_preview_decode_refresh_budget_exceeded_count={} operator_preview_non_program_visible_count={} operator_preview_reused_program_frame_count={} operator_preview_program_slot_visible_count={} operator_preview_program_slot_reuse_source={} operator_preview_program_slot_black_count={} operator_preview_snapshot_retention_enabled={} operator_preview_snapshot_reuse_count={} operator_preview_snapshot_reuse_slot_counts={} operator_preview_snapshot_created_count={} operator_preview_snapshot_created_slot_counts={} operator_preview_placeholder_avoided_by_snapshot_count={} operator_preview_slot_black_after_snapshot_count={} operator_preview_program_fps_impact_estimate={} preview_compose_skipped_for_program_count={} preview_compose_reused_for_program_count={} program_render_loop_attempt_count={} program_window_render_success_count={} program_window_render_failure_count={} program_render_effective_fps={} effective_program_render_fps={}",
         summary.continuous_decode_ffmpeg_low_latency_args_enabled,
         summary.continuous_decode_ffmpeg_probe_args_enabled,
         sanitize_summary_value(&summary.continuous_decode_ffmpeg_loglevel),
@@ -16351,6 +16536,16 @@ fn format_four_view_two_real_handoff_preview_loop_summary(
         format_optional_u128(summary.program_continuous_latest_output_age_ms),
         summary.program_decode_fps,
         format_optional_u64(summary.program_selected_source_frame_lag),
+        format_optional_u64(summary.program_smooth_latest_selected_frame_id),
+        format_optional_u64(summary.program_smooth_latest_rendered_frame_id),
+        format_optional_u64(summary.program_smooth_latest_latest_continuous_frame_id),
+        format_optional_u64(summary.program_smooth_latest_selected_minus_rendered_lag),
+        format_optional_u64(summary.program_smooth_latest_selected_minus_latest_continuous_lag),
+        format_optional_u64(summary.program_smooth_latest_rendered_minus_latest_continuous_gap),
+        summary.program_smooth_latest_source_mismatch_count,
+        summary.program_smooth_latest_stale_reuse_count,
+        format_optional_u128(summary.program_smooth_latest_cache_age_ms),
+        format_optional_u128(summary.program_smooth_latest_frame_age_ms),
         summary.program_first_validation_enabled,
         summary.program_first_suppressed_preview_one_shot_decode_count,
         summary.program_first_suppressed_preview_one_shot_decode_slot_counts,
@@ -17908,6 +18103,7 @@ mod tests {
             selection: selection.clone(),
             decoded_frame: fixture_decoded_frame(2, 2, [0x90, 0x91, 0x92, 255]),
             frame_id: 100,
+            selected_frame_id: Some(535),
             selected_frame_lag: Some(435),
             output_age_ms: Some(12),
         };
@@ -17916,6 +18112,7 @@ mod tests {
         let choice = super::select_two_real_program_output_render_frame(
             ProgramContinuousDecodeMode::SmoothLatest,
             &selection,
+            Some(535),
             Some(&selected_one_shot),
             None,
             Some(&latest),
@@ -17929,6 +18126,17 @@ mod tests {
         assert_eq!(choice.continuous_latest_frame_id, Some(100));
         assert_eq!(choice.continuous_selected_frame_lag, Some(435));
         assert_eq!(choice.continuous_latest_output_age_ms, Some(12));
+        assert_eq!(choice.rendered_frame_id, Some(100));
+    }
+
+    #[test]
+    fn switcher_program_smooth_latest_frame_lag_helpers_split_render_and_latest() {
+        assert_eq!(super::optional_frame_lag(Some(156), Some(100)), Some(56));
+        assert_eq!(super::optional_frame_lag(Some(100), Some(156)), Some(0));
+        assert_eq!(super::optional_frame_lag(Some(156), None), None);
+        assert_eq!(super::optional_frame_gap(Some(100), Some(156)), Some(56));
+        assert_eq!(super::optional_frame_gap(Some(156), Some(100)), Some(56));
+        assert_eq!(super::optional_frame_gap(None, Some(156)), None);
     }
 
     #[test]
@@ -17950,6 +18158,7 @@ mod tests {
             selection: selection.clone(),
             decoded_frame: fixture_decoded_frame(2, 2, [0x90, 0x91, 0x92, 255]),
             frame_id: 99,
+            selected_frame_id: Some(99),
             selected_frame_lag: Some(0),
             output_age_ms: Some(3),
         };
@@ -18032,6 +18241,7 @@ mod tests {
         let cached = super::TwoRealCachedProgramOutputFrame {
             selection: selection.clone(),
             decoded_frame: fixture_decoded_frame(2, 2, [0x50, 0x51, 0x52, 255]),
+            frame_id: Some(88),
         };
 
         let (candidate, reuse_source) =
@@ -18223,6 +18433,7 @@ mod tests {
             selection: selection.clone(),
             decoded_frame: fixture_decoded_frame(2, 2, [0x90, 0x91, 0x92, 255]),
             frame_id: 100,
+            selected_frame_id: Some(535),
             selected_frame_lag: Some(435),
             output_age_ms: Some(12),
         };
@@ -18231,6 +18442,7 @@ mod tests {
         let choice = super::select_two_real_program_output_render_frame(
             ProgramContinuousDecodeMode::TargetFrame,
             &selection,
+            Some(535),
             Some(&selected_frame),
             None,
             Some(&latest),
@@ -22209,6 +22421,20 @@ mod tests {
         assert!(formatted.contains("program_continuous_latest_output_age_ms=none"));
         assert!(formatted.contains("program_decode_fps=n/a"));
         assert!(formatted.contains("program_selected_source_frame_lag=none"));
+        assert!(formatted.contains("program_smooth_latest_selected_frame_id=none"));
+        assert!(formatted.contains("program_smooth_latest_rendered_frame_id=none"));
+        assert!(formatted.contains("program_smooth_latest_latest_continuous_frame_id=none"));
+        assert!(formatted.contains("program_smooth_latest_selected_minus_rendered_lag=none"));
+        assert!(
+            formatted.contains("program_smooth_latest_selected_minus_latest_continuous_lag=none")
+        );
+        assert!(
+            formatted.contains("program_smooth_latest_rendered_minus_latest_continuous_gap=none")
+        );
+        assert!(formatted.contains("program_smooth_latest_source_mismatch_count=0"));
+        assert!(formatted.contains("program_smooth_latest_stale_reuse_count=0"));
+        assert!(formatted.contains("program_smooth_latest_cache_age_ms=none"));
+        assert!(formatted.contains("program_smooth_latest_frame_age_ms=none"));
         assert!(formatted.contains("program_first_validation_enabled=false"));
         assert!(formatted.contains("program_first_suppressed_preview_one_shot_decode_count=0"));
         assert!(formatted.contains(

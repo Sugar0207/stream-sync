@@ -46,18 +46,49 @@
 - source-side marker approach は維持する。ProgramOutput に overlay / watermark / Preview label を足さず、client/source 側の validation-only marker を改善して selected source identity を再確認する。
 - smooth-latest lag criteria の最新 reference 値は `program_selected_source_frame_lag=5`、`program_continuous_selected_frame_lag=0`、`continuous_decode_latest_selected_to_output_frame_gap=5`、`program_render_effective_fps=22.285`、black / placeholder `0`。
 - 以前の selected-source marker reference run は、startup bootstrap one-shot を steady-state fallback に数えない前提の draft `Good` 参考値として残す。ただし最新 completed OBS safety template の結果で上書きして PASS 扱いにはしない。
-- 最新 completed OBS safety template 付き criteria-based ProgramOutput validation run は `WARNING` と記録する。
-- 最新 completed template の内訳は、OBS safety `PASS`、Program cleanliness `PASS`、lag criteria `Warning`、selected-source visual verification `incomplete / WARNING`、overall ProgramOutput criteria-based validation `WARNING`。
-- 最新 metrics は `program_selected_source_frame_lag=12`、`program_continuous_selected_frame_lag=12`、`continuous_decode_latest_selected_to_output_frame_gap=12`、`program_render_effective_fps=20.796`、black / placeholder / after-first missing は `0`。
+- `large-corner-band-v2` を使った次の completed criteria-based ProgramOutput validation rerun
+  は `manual-logs/program-output-criteria-validation-20260606-001029` として
+  記録済み。
+- 最新 completed template の内訳は、OBS safety `PASS`、Program cleanliness
+  `PASS`、selected-source visual verification `WARNING`、lag criteria `Fail`、
+  overall ProgramOutput criteria-based validation `FAIL`。
+- 最新 metrics は `program_selected_source_frame_lag=56`、
+  `program_continuous_selected_frame_lag=56`、
+  `continuous_decode_latest_selected_to_output_frame_gap=56`、
+  `program_render_effective_fps=21.362`、black / placeholder /
+  after-first missing は `0`。lag は前回の `12 / 12 / 12` からさらに悪化した。
+- smooth-latest frame selection path のコード調査では、`56 / 56 / 56`
+  は Program が古い last-valid cache を選んだというより、selected source
+  frame id に対して latest matching continuous decoded frame id / rendered
+  frame id が同じ 56 frames 遅れている形と解釈するのが妥当。ただし、manual
+  log dir が repo 内にないため、feed cadence / FFmpeg throughput / stdout
+  drain / queue drop policy のどれが深い原因かは次 rerun の診断で確認する。
+- smooth-latest 専用 diagnostics として
+  `program_smooth_latest_selected_frame_id`、
+  `program_smooth_latest_rendered_frame_id`、
+  `program_smooth_latest_latest_continuous_frame_id`、
+  `program_smooth_latest_selected_minus_rendered_lag`、
+  `program_smooth_latest_selected_minus_latest_continuous_lag`、
+  `program_smooth_latest_rendered_minus_latest_continuous_gap`、
+  `program_smooth_latest_source_mismatch_count`、
+  `program_smooth_latest_stale_reuse_count`、
+  `program_smooth_latest_cache_age_ms`、
+  `program_smooth_latest_frame_age_ms` を追加済み。
 - `validation_source_marker_style=large-corner-band-v2` の validation-only source marker は実装済み。P1 / P2 は大きな corner band、block glyph、位置差のある高コントラスト pattern で区別する。既定 behavior は marker disabled のまま。
-- ただし `large-corner-band-v2` を使った completed manual rerun の repo 内証跡はまだ未記録。P2 が Program で human-visible に確認され、P1 が Program に出ていないことが記録されるまでは、selected-source visual verification を `PASS` に上げない。
-- smooth-latest の latency / lag accept criteria と OBS safety checklist は docs に定義済みだが、改善後 marker で selected-source visual verification を再実施する必要があるため、ProgramOutput closeout blocker として継続する。
+- client summary では `P1` / `P2` marker enable は確認できたが、この rerun で
+  `P2` が Program で human-visible、かつ `P1` が Program に出ていないという
+  repo-backed manual visual 証跡はまだ不足するため、selected-source visual
+  verification は `PASS` に上げない。
+- smooth-latest の latency / lag accept criteria と OBS safety checklist は docs
+  に定義済みだが、最新 rerun では lag が `Fail` になったため、ProgramOutput
+  closeout blocker は selected-source visual verification だけでなく lag
+  investigation も継続する。
 - 現在の詳細は `docs/operations/obs-capture-validation.md` と `docs/operations/session-log.md` を参照する。
 
 ## 次にやること
-1. [ ] `large-corner-band-v2` を使い、completed OBS safety template 付きで criteria-based ProgramOutput validation rerun を記録する
-2. [ ] rerun でも lag が再び `12 / 12 / 12` 近辺なら、smooth-latest lag worsening investigation を次タスクとして開始する
-3. [ ] 4-view Preview requirement を維持したまま、ProgramOutput non-FPS blocker audit を継続し、lag / one-shot fallback / OBS safety を確認する
+1. [ ] new `program_smooth_latest_*` diagnostics 付きで smooth-latest criteria rerun を行い、`56 / 56 / 56` が continuous decoder output lag、Program render stale reuse、source mismatch、feed/throughput backlog のどれかを確定する
+2. [ ] improved-marker rerun の manual visual 証跡を repo に残し、もし marker がまだ読みにくいなら marker/source visual strategy を次タスクに更新する
+3. [ ] 4-view Preview requirement を維持したまま、ProgramOutput non-FPS blocker audit を更新し、closeout blocked を継続する
 
 ## 保留 / 限定
 - same-loop low-cost Preview refresh tuning
@@ -91,6 +122,7 @@
 - [x] validation-only source marker visibility improvement は実装済み
 - [x] selected-source marker reference validation は draft `Good` lag criteria に暫定一致
 - [x] OBS ProgramOutput capture safety checklist / operator preflight / manual validation template は docs に定義済み
+- [x] `large-corner-band-v2` criteria-based ProgramOutput rerun は記録済み
 
 ## 参照メモ
 - ProgramOutput の詳細な未解決点は `docs/operations/obs-capture-validation.md` を参照する。
