@@ -1404,6 +1404,13 @@ Current limitations:
     `continuous_decode_no_output_after_input_count=2213`,
     `continuous_decode_output_frame_interval_ms_avg=46.466`,
     `continuous_decode_output_frame_interval_ms_max=719`
+  - next backlog diagnostics:
+    `continuous_decode_input_throughput_fps`,
+    `continuous_decode_output_to_input_fps_ratio`,
+    `continuous_decode_backlog_frame_gap`,
+    `continuous_decode_backlog_age_ms`, and
+    `continuous_decode_backlog_classification` are now added as summary-only
+    fields for the next rerun.
   - result handling:
     the previous `56 / 56 / 56` `FAIL` is superseded by this latest `16 / 16 /
     16` `WARNING`. ProgramOutput remains clean / selected-only, but closeout is
@@ -1444,17 +1451,14 @@ Current limitations:
     ProgramOutput still gets no overlay, watermark, Preview label, or 4-view
     Program fallback.
 - Next candidate order:
-  1. Investigate continuous decoder / feed backlog. Start with throughput below
+  1. Rerun smooth-latest with the new backlog diagnostics and read input/output
+     fps, output/input ratio, backlog frame gap, backlog age, and backlog
+     classification together with pending correspondence, reader blocked,
+     no-output, output interval, and pipeline mode fields.
+  2. Investigate continuous decoder / feed backlog. Start with throughput below
      input, FFmpeg scale path, stdout read cadence, output interval, pending
      correspondence age, completed latency, reader blocked count, no-output
      counts, decoded cache dropping, and input feed vs output throughput.
-  2. Add only narrow diagnostics if the existing counters are not enough:
-     `continuous_decode_backlog_classification`,
-     `continuous_decode_input_fps`, `continuous_decode_output_fps`,
-     `continuous_decode_backlog_frame_gap`,
-     `continuous_decode_backlog_age_ms`,
-     `continuous_decode_stdout_waiting_for_frame_count`, and
-     `continuous_decode_output_throughput_vs_client_fps_ratio`.
   3. Keep possible fixes narrow if evidence points clearly: no-scale or
      lower-cost FFmpeg path, low-latency / probe args, aggressive pending decode
      input dropping, decode only latest selected Program source, or workload

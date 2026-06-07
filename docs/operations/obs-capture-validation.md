@@ -695,6 +695,14 @@ Validated command examples for the Program path:
         `program_smooth_latest_stale_reuse_count`,
         `program_smooth_latest_cache_age_ms`, and
         `program_smooth_latest_frame_age_ms`.
+      - added continuous backlog diagnostics for the next rerun:
+        `continuous_decode_input_throughput_fps`,
+        `continuous_decode_output_to_input_fps_ratio`,
+        `continuous_decode_backlog_frame_gap`,
+        `continuous_decode_backlog_age_ms`, and
+        `continuous_decode_backlog_classification`. These are summary-only
+        fields derived from existing input/output and correspondence counters;
+        they do not change ProgramOutput rendering.
       - marker improvement status:
         `large-corner-band-v2` is now recorded in the next rerun phase, but a
         repo-backed human-visible `P2` / not-`P1` confirmation is still

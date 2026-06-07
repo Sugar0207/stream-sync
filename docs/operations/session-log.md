@@ -1,5 +1,99 @@
 <!-- stream-sync/docs/operations/session-log.md -->
 
+## 2026-06-08
+### Type
+- Codex continuous decode backlog instrumentation
+
+### Work
+- Re-checked the repo-backed ProgramOutput closeout state instead of relying
+  only on pasted run data.
+- Confirmed that the earlier `56 / 56 / 56` FAIL run is recorded, and that a
+  later smooth-latest diagnostics rerun narrowed the current observed lag to
+  `16 / 16 / 16` with overall ProgramOutput criteria-based `WARNING`.
+- Inspected the smooth-latest ProgramOutput code path in
+  `apps/switcher/src/main.rs`.
+- Kept ProgramOutput behavior unchanged:
+  - no Program overlay
+  - no watermark
+  - no Preview label
+  - no 4-view-as-Program
+  - same-loop Preview tuning remains paused
+- Added summary-only continuous decode backlog diagnostics so the next rerun can
+  classify whether lag is caused by decode output backlog rather than Program
+  render selection.
+
+### Code Path Findings
+- ProgramOutput smooth-latest reads `latest_program_continuous_frame` in
+  `select_two_real_program_output_render_frame`.
+- In `SmoothLatest`, Program prefers the latest continuous decoded frame for
+  the selected source, even when it is stale relative to the selected source
+  frame id.
+- Existing diagnostics now split:
+  - selected source frame id
+  - rendered Program frame id
+  - latest continuous decoded frame id
+  - selected-minus-rendered lag
+  - selected-minus-latest-continuous lag
+  - rendered-minus-latest-continuous gap
+- The recorded later rerun showed rendered frame `3073` and latest continuous
+  frame `3073`, while selected source was `3089`. That makes Program render
+  selection / source mismatch unlikely and points to continuous decode/feed
+  backlog.
+
+### Added Diagnostics
+- `continuous_decode_input_throughput_fps`
+- `continuous_decode_output_to_input_fps_ratio`
+- `continuous_decode_backlog_frame_gap`
+- `continuous_decode_backlog_age_ms`
+- `continuous_decode_backlog_classification`
+
+### Next Rerun Values
+- `program_smooth_latest_selected_frame_id`
+- `program_smooth_latest_rendered_frame_id`
+- `program_smooth_latest_latest_continuous_frame_id`
+- `program_smooth_latest_selected_minus_rendered_lag`
+- `program_smooth_latest_selected_minus_latest_continuous_lag`
+- `program_smooth_latest_rendered_minus_latest_continuous_gap`
+- `continuous_decode_input_throughput_fps`
+- `continuous_decode_output_throughput_fps`
+- `continuous_decode_output_to_input_fps_ratio`
+- `continuous_decode_backlog_frame_gap`
+- `continuous_decode_backlog_age_ms`
+- `continuous_decode_backlog_classification`
+- `continuous_decode_pending_correspondence_count`
+- `continuous_decode_pending_correspondence_age_ms_avg`
+- `continuous_decode_completed_correspondence_latency_ms_avg`
+- `continuous_decode_reader_full_frame_elapsed_ms_avg`
+- `continuous_decode_stdout_reader_blocked_count`
+- `continuous_decode_no_output_after_input_count`
+- `continuous_decode_output_frame_interval_ms_avg`
+- `continuous_decode_output_frame_interval_ms_max`
+- `continuous_decode_output_pipeline_experiment_mode`
+- `continuous_decode_output_pipeline_scale_mode`
+
+### TODO Update
+- Updated current position with the new summary-only backlog diagnostics.
+- Moved the next task to a smooth-latest rerun using those diagnostics.
+- Kept ProgramOutput closeout blocked.
+- Kept the 4-view Preview requirement active for operator monitoring, but out
+  of the OBS Program scene.
+
+### Validation
+- `cargo fmt`
+  - result: PASS
+- `cargo check -p stream-sync-switcher`
+  - result: PASS
+  - note: existing dead-code warnings remain in switcher helper functions
+- `cargo test -p stream-sync-switcher continuous_decode_backlog`
+  - result: PASS, 1 bin test
+- `cargo test -p stream-sync-switcher switcher_four_view_two_real_handoff_preview_summary_formats_expected_fields`
+  - result: PASS, 1 bin test
+- `cargo test -p stream-sync-switcher smooth_latest`
+  - result: PASS, 2 bin tests
+- `git diff --check`
+  - result: PASS
+  - note: LF/CRLF warnings only
+
 ## 2026-06-07
 ### Type
 - Codex smooth-latest lag rerun WARNING record and continuous backlog investigation start

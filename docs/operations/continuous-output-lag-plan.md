@@ -13,6 +13,23 @@ Last updated: 2026-05-28
   move the next main line to output availability / throughput.
 
 ## Latest Evidence
+- latest ProgramOutput smooth-latest lag rerun:
+  - `S:\stream-sync\manual-logs\program-output-smooth-latest-lag-rerun-20260607-002942`
+  - Program rendered frame and latest continuous decoded frame matched
+    (`3073`), while selected source was `3089`.
+  - This makes Program render selection / source mismatch unlikely and points
+    to continuous decode/feed backlog.
+  - Current backlog evidence includes output throughput `20.906fps`, latest
+    input-output lag `41`, pending correspondence `41`, pending age avg
+    `1004.488ms`, completed latency avg/max `1486.485ms` / `2228ms`, reader
+    full-frame avg `47.295ms`, reader blocked `2194`, no-output-after-input
+    `2213`, and output interval avg/max `46.466ms` / `719ms`.
+  - Next rerun should also read the new summary-only fields:
+    `continuous_decode_input_throughput_fps`,
+    `continuous_decode_output_to_input_fps_ratio`,
+    `continuous_decode_backlog_frame_gap`,
+    `continuous_decode_backlog_age_ms`, and
+    `continuous_decode_backlog_classification`.
 - latest optimized BGR24 A/B rerun:
   - `S:\stream-sync\manual-logs\two-client-optimized-bgr24-ab-rerun-20260528-103130`
   - default BGRA:

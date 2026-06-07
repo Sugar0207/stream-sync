@@ -2,7 +2,7 @@
 
 # StreamSync TODO
 
-最終更新: 2026-06-07
+最終更新: 2026-06-08
 
 このファイルは、現在位置と次の作業だけを確認するための TODO です。
 時系列の作業履歴は `docs/operations/session-log.md` を正とし、検証の詳細は各運用ドキュメントへ寄せます。
@@ -51,6 +51,7 @@
 - 最新 metrics は `program_selected_source_frame_lag=16`、`program_continuous_selected_frame_lag=16`、`continuous_decode_latest_selected_to_output_frame_gap=16`、`program_render_effective_fps=23.779`。smooth-latest details は selected frame `3089`、rendered frame `3073`、latest continuous frame `3073`、selected-minus-rendered `16`、selected-minus-latest-continuous `16`、rendered-minus-latest-continuous `0`、source mismatch `0`、stale reuse `41`、cache age / frame age `1ms`。
 - smooth-latest lag 原因分類は、Program render selection issue `unlikely`、source mismatch `unlikely`、stale / last-valid reuse `not primary` だが `program_smooth_latest_stale_reuse_count=41` は watch 継続、continuous decoder / feed backlog `likely`。
 - continuous backlog の根拠は、Program が latest available continuous frame を render している一方で、その latest continuous frame が selected source より 16 frames 遅れていること。加えて `continuous_decode_output_throughput_fps=20.906`、`continuous_decode_latest_input_minus_latest_output_lag=41`、`continuous_decode_pending_correspondence_count=41`、pending age avg `1004.488ms`、completed latency avg `1486.485ms` / max `2228ms`、reader full-frame avg `47.295ms`、stdout reader blocked `2194`、no-output-after-input `2213`、output interval avg `46.466ms` / max `719ms` が backlog / throughput 側を示す。
+- 次 rerun 用の最小 backlog diagnostics として `continuous_decode_input_throughput_fps`、`continuous_decode_output_to_input_fps_ratio`、`continuous_decode_backlog_frame_gap`、`continuous_decode_backlog_age_ms`、`continuous_decode_backlog_classification` を追加済み。これらは挙動を変えず、既存 counters から input/output throughput と backlog 状態を読みやすくする summary-only diagnostics。
 - smooth-latest 専用 diagnostics として
   `program_smooth_latest_selected_frame_id`、
   `program_smooth_latest_rendered_frame_id`、
@@ -69,8 +70,8 @@
 - 現在の詳細は `docs/operations/obs-capture-validation.md` と `docs/operations/session-log.md` を参照する。
 
 ## 次にやること
-1. [ ] continuous decoder / feed backlog を調査し、throughput below input、FFmpeg scale path、stdout read cadence、output interval、pending correspondence age、completed latency、reader blocked / no-output counts、decoded cache dropping、input feed vs output throughput を切り分ける
-2. [ ] 必要なら `continuous_decode_backlog_classification`、`continuous_decode_input_fps`、`continuous_decode_output_fps`、`continuous_decode_backlog_frame_gap`、`continuous_decode_backlog_age_ms`、`continuous_decode_stdout_waiting_for_frame_count`、`continuous_decode_output_throughput_vs_client_fps_ratio` のような最小 diagnostics を追加する
+1. [ ] 新しい backlog diagnostics 付きで smooth-latest rerun を行い、`continuous_decode_backlog_classification`、input/output fps、output/input ratio、backlog frame gap、backlog age、pending correspondence、stdout reader / output interval を読む
+2. [ ] continuous decoder / feed backlog を調査し、throughput below input、FFmpeg scale path、stdout read cadence、output interval、pending correspondence age、completed latency、reader blocked / no-output counts、decoded cache dropping、input feed vs output throughput を切り分ける
 3. [ ] 4-view Preview requirement を維持したまま、ProgramOutput non-FPS blocker audit を更新し、closeout blocked を継続する
 
 ## 保留 / 限定
