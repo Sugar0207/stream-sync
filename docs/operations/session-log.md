@@ -1,5 +1,88 @@
 <!-- stream-sync/docs/operations/session-log.md -->
 
+## 2026-06-07
+### Type
+- Codex smooth-latest lag rerun WARNING record and continuous backlog investigation start
+
+### Work
+- Recorded the latest smooth-latest lag diagnostics rerun:
+  `S:\stream-sync\manual-logs\program-output-smooth-latest-lag-rerun-20260607-002942`.
+- Corrected the manual Program cleanliness ambiguity:
+  the visible `P2` marker was a source-side validation marker, not a Program
+  overlay, debug UI, Preview label, or 4-view UI.
+- Reclassified the rerun as overall ProgramOutput criteria-based `WARNING`,
+  not `FAIL` after the marker ambiguity correction and not `PASS` because lag
+  still exceeded the warning/fail-good boundary.
+- Recorded corrected classifications:
+  - OBS safety: `PASS`
+  - Program cleanliness: `PASS`
+  - selected-source visual verification: `PASS`
+  - lag criteria: `Warning`
+  - overall ProgramOutput criteria-based validation: `WARNING`
+- Recorded the main smooth-latest lag diagnostics:
+  - `program_selected_source_frame_lag=16`
+  - `program_continuous_selected_frame_lag=16`
+  - `continuous_decode_latest_selected_to_output_frame_gap=16`
+  - `program_render_effective_fps=23.779`
+  - `program_smooth_latest_selected_frame_id=3089`
+  - `program_smooth_latest_rendered_frame_id=3073`
+  - `program_smooth_latest_latest_continuous_frame_id=3073`
+  - `program_smooth_latest_selected_minus_rendered_lag=16`
+  - `program_smooth_latest_selected_minus_latest_continuous_lag=16`
+  - `program_smooth_latest_rendered_minus_latest_continuous_gap=0`
+  - `program_smooth_latest_source_mismatch_count=0`
+  - `program_smooth_latest_stale_reuse_count=41`
+  - `program_smooth_latest_cache_age_ms=1`
+  - `program_smooth_latest_frame_age_ms=1`
+- Recorded smooth-latest lag cause classification:
+  - Program render selection issue: `unlikely`
+  - source mismatch: `unlikely`
+  - stale / last-valid reuse: `not primary`; keep watching
+    `program_smooth_latest_stale_reuse_count=41`
+  - continuous decoder / feed backlog: `likely`
+- Started the continuous decoder / feed backlog investigation from the current
+  evidence:
+  - `continuous_decode_output_throughput_fps=20.906`
+  - `continuous_decode_latest_input_minus_latest_output_lag=41`
+  - `continuous_decode_latest_input_to_output_frame_gap=41`
+  - `continuous_decode_output_lag_to_selected_frames=16`
+  - `continuous_decode_pending_correspondence_count=41`
+  - `continuous_decode_pending_correspondence_age_ms_avg=1004.488`
+  - `continuous_decode_completed_correspondence_latency_ms_avg=1486.485`
+  - `continuous_decode_completed_correspondence_latency_ms_max=2228`
+  - `continuous_decode_reader_full_frame_elapsed_ms_avg=47.295`
+  - `continuous_decode_reader_full_frame_slow_count=422`
+  - `continuous_decode_stdout_reader_blocked_count=2194`
+  - `continuous_decode_no_output_after_input_count=2213`
+  - `continuous_decode_output_frame_interval_ms_avg=46.466`
+  - `continuous_decode_output_frame_interval_ms_max=719`
+- Kept ProgramOutput clean / selected-only. No Program overlay, watermark,
+  Preview label, or 4-view Program fallback was added.
+- Kept `StreamSync 4-view Output` required for operator monitoring, but not
+  active in the OBS Program scene.
+- Kept ProgramOutput near-MVP closeout blocked. Operator Preview remains
+  unavailable in Program-first mode, and lag is still `Warning`.
+- This step was docs-only; no Rust files were changed.
+
+### Files Changed
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+- `docs/operations/obs-capture-validation.md`
+- `docs/operations/continuous-output-pipeline-experiment-plan.md`
+
+### TODO Update
+- Replaced the immediate smooth-latest rerun task with continuous decoder /
+  feed backlog investigation.
+- Added candidate diagnostics only as conditional follow-up, not as committed
+  behavior for this docs-only step.
+- Preserved the 4-view Preview requirement and ProgramOutput closeout blocked
+  state.
+
+### Validation
+- Docs-only change; Rust files were not touched.
+- `git diff --check`
+  - result: PASS
+
 ## 2026-06-06
 ### Type
 - Codex smooth-latest ProgramOutput lag worsening investigation diagnostics

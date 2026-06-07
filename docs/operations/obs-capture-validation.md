@@ -564,7 +564,73 @@ Validated command examples for the Program path:
       bootstrap (`program_render_used_one_shot_fallback_count=1`,
       `program_startup_bootstrap_used_for_first_render=true`) rather than
       steady-state fallback
-    - latest completed-template criteria-based validation run:
+    - latest smooth-latest lag diagnostics rerun:
+      - log dir:
+        `S:\stream-sync\manual-logs\program-output-smooth-latest-lag-rerun-20260607-002942`
+      - overall ProgramOutput criteria-based validation:
+        `WARNING`, not `PASS` and not `FAIL` after marker ambiguity correction
+      - OBS safety classification:
+        `PASS`
+      - Program cleanliness:
+        `PASS`
+      - selected-source visual verification:
+        `PASS`
+      - lag criteria classification:
+        `Warning`
+      - validation setup:
+        selected Program source was `player2`, client markers were `P1` / `P2`,
+        ProgramOutput was enabled, smooth-latest was enabled, Program-first
+        validation mode was enabled, and startup bootstrap one-shot was enabled
+      - manual OBS result:
+        OBS captured only `StreamSync Program Output`; OBS did not capture
+        `StreamSync 4-view Output`; no Preview / multiview source was in the
+        Program scene; ProgramOutput title was verified; no wrong-window
+        suspicion; no 4-view layout; no black / placeholder; `P2` marker was
+        visible in Program; `P1` marker was not visible in Program; perceived
+        stutter was small
+      - marker ambiguity correction:
+        the visible `P2` marker is a source-side validation marker. It is not a
+        Program overlay, debug UI, Preview label, or 4-view UI. Therefore the
+        manual field that said Program had border/debug UI/Preview label mixed
+        in must not be treated as a Program cleanliness failure.
+      - main lag metrics:
+        `program_selected_source_frame_lag=16`,
+        `program_continuous_selected_frame_lag=16`,
+        `continuous_decode_latest_selected_to_output_frame_gap=16`,
+        `program_render_effective_fps=23.779`
+      - smooth-latest diagnostics:
+        selected frame `3089`, rendered frame `3073`, latest continuous frame
+        `3073`, selected-minus-rendered lag `16`,
+        selected-minus-latest-continuous lag `16`,
+        rendered-minus-latest-continuous gap `0`, source mismatch count `0`,
+        stale reuse count `41`, cache age `1ms`, frame age `1ms`
+      - cause classification:
+        Program render selection issue is `unlikely`, source mismatch is
+        `unlikely`, stale / last-valid reuse is `not primary` but
+        `program_smooth_latest_stale_reuse_count=41` remains worth watching,
+        and continuous decoder / feed backlog is `likely`
+      - backlog evidence:
+        `continuous_decode_output_throughput_fps=20.906`,
+        `continuous_decode_latest_input_minus_latest_output_lag=41`,
+        `continuous_decode_latest_input_to_output_frame_gap=41`,
+        `continuous_decode_output_lag_to_selected_frames=16`,
+        `continuous_decode_pending_correspondence_count=41`,
+        `continuous_decode_pending_correspondence_age_ms_avg=1004.488`,
+        `continuous_decode_completed_correspondence_latency_ms_avg=1486.485`,
+        `continuous_decode_completed_correspondence_latency_ms_max=2228`,
+        `continuous_decode_reader_full_frame_elapsed_ms_avg=47.295`,
+        `continuous_decode_reader_full_frame_slow_count=422`,
+        `continuous_decode_stdout_reader_blocked_count=2194`,
+        `continuous_decode_no_output_after_input_count=2213`,
+        `continuous_decode_output_frame_interval_ms_avg=46.466`, and
+        `continuous_decode_output_frame_interval_ms_max=719`
+      - result handling:
+        ProgramOutput remains clean / selected-only and overall `WARNING`.
+        Do not close ProgramOutput near-MVP on this result. Continue
+        continuous decoder / feed backlog investigation. `StreamSync 4-view
+        Output` remains required for operator monitoring, but must not be
+        active in the OBS Program scene.
+    - previous completed-template criteria-based validation run:
       - log dir:
         `D:\stream-sync\manual-logs\program-output-criteria-validation-20260606-001029`
       - overall ProgramOutput criteria-based validation:

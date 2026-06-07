@@ -2,7 +2,7 @@
 
 # StreamSync TODO
 
-最終更新: 2026-06-06
+最終更新: 2026-06-07
 
 このファイルは、現在位置と次の作業だけを確認するための TODO です。
 時系列の作業履歴は `docs/operations/session-log.md` を正とし、検証の詳細は各運用ドキュメントへ寄せます。
@@ -40,29 +40,17 @@
 - switcher-first cold start の残り待ちは、主に selected client/player2 frame の到着待ち。ProgramOutput は selected-only のため selected source frame が存在する前には描画できず、bootstrap は source frame 到着後の decode / continuous startup latency だけを短縮する。
 - ProgramOutput startup readiness diagnostics は最小実装済み。summary は `program_startup_readiness_state`、`program_selected_source_wait_elapsed_ms`、`program_startup_waiting_for_selected_source_count`、`program_startup_bootstrap_after_source_seen_elapsed_ms`、`program_startup_selected_source_seen_count` を出す。
 - ProgramOutput startup readiness semantics は `program_selection_configured` -> `program_selected_source_waiting` -> `program_selected_source_seen` -> `program_first_frame_bootstrapping` -> `program_first_frame_rendered` -> `program_steady_state` として扱う。ProgramOutput 無効時の summary 値だけは `disabled`。
-- selected source visual verification 用の validation-only client/source-side marker は実装済みだが、最新の completed OBS safety template では marker が機械的で P1 / P2 を人間の OBS 目視で判別しにくかったため、この run の selected-source visual verification は incomplete / WARNING とする。
+- selected source visual verification 用の validation-only client/source-side marker は実装済み。最新 smooth-latest lag diagnostics rerun では `P2` が Program で human-visible、`P1` は Program に出ていないため selected-source visual verification は `PASS`。
 - ProgramOutput は near-MVP closeout ではない。non-FPS blocker が残るため closeout は引き続き blocked とし、same-loop Preview tuning も paused のままにする。
 - 新 diagnostics は bootstrap decode の elapsed / error class / FFmpeg exit+stderr / payload bytes / NAL kinds / SPS/PPS/IDR / frame_id / slot/client / actual invoke vs pre-invoke skip を読む。
 - source-side marker approach は維持する。ProgramOutput に overlay / watermark / Preview label を足さず、client/source 側の validation-only marker を改善して selected source identity を再確認する。
-- smooth-latest lag criteria の最新 reference 値は `program_selected_source_frame_lag=5`、`program_continuous_selected_frame_lag=0`、`continuous_decode_latest_selected_to_output_frame_gap=5`、`program_render_effective_fps=22.285`、black / placeholder `0`。
-- 以前の selected-source marker reference run は、startup bootstrap one-shot を steady-state fallback に数えない前提の draft `Good` 参考値として残す。ただし最新 completed OBS safety template の結果で上書きして PASS 扱いにはしない。
-- `large-corner-band-v2` を使った次の completed criteria-based ProgramOutput validation rerun
-  は `manual-logs/program-output-criteria-validation-20260606-001029` として
-  記録済み。
-- 最新 completed template の内訳は、OBS safety `PASS`、Program cleanliness
-  `PASS`、selected-source visual verification `WARNING`、lag criteria `Fail`、
-  overall ProgramOutput criteria-based validation `FAIL`。
-- 最新 metrics は `program_selected_source_frame_lag=56`、
-  `program_continuous_selected_frame_lag=56`、
-  `continuous_decode_latest_selected_to_output_frame_gap=56`、
-  `program_render_effective_fps=21.362`、black / placeholder /
-  after-first missing は `0`。lag は前回の `12 / 12 / 12` からさらに悪化した。
-- smooth-latest frame selection path のコード調査では、`56 / 56 / 56`
-  は Program が古い last-valid cache を選んだというより、selected source
-  frame id に対して latest matching continuous decoded frame id / rendered
-  frame id が同じ 56 frames 遅れている形と解釈するのが妥当。ただし、manual
-  log dir が repo 内にないため、feed cadence / FFmpeg throughput / stdout
-  drain / queue drop policy のどれが深い原因かは次 rerun の診断で確認する。
+- smooth-latest lag criteria の stable reference 値は `program_selected_source_frame_lag=5`、`program_continuous_selected_frame_lag=0`、`continuous_decode_latest_selected_to_output_frame_gap=5`、`program_render_effective_fps=22.285`、black / placeholder `0`。
+- 最新 smooth-latest lag diagnostics rerun は `S:\stream-sync\manual-logs\program-output-smooth-latest-lag-rerun-20260607-002942` として記録済み。Program selected source は `player2`、client markers は `P1` / `P2`、ProgramOutput enabled、smooth-latest enabled、Program-first validation mode、startup bootstrap one-shot。
+- 最新 rerun の補正後分類は、OBS safety `PASS`、Program cleanliness `PASS`、selected-source visual verification `PASS`、lag criteria `Warning`、overall ProgramOutput criteria-based validation `WARNING`。この run は marker ambiguity 補正後の `FAIL` ではなく、lag による `WARNING` とする。
+- visible `P2` marker は source-side validation marker であり、Program overlay、debug UI、Preview label、4-view UI ではない。したがって「Program に border/debug UI/Preview label が混ざっていた」という手動欄は Program cleanliness failure として扱わない。
+- 最新 metrics は `program_selected_source_frame_lag=16`、`program_continuous_selected_frame_lag=16`、`continuous_decode_latest_selected_to_output_frame_gap=16`、`program_render_effective_fps=23.779`。smooth-latest details は selected frame `3089`、rendered frame `3073`、latest continuous frame `3073`、selected-minus-rendered `16`、selected-minus-latest-continuous `16`、rendered-minus-latest-continuous `0`、source mismatch `0`、stale reuse `41`、cache age / frame age `1ms`。
+- smooth-latest lag 原因分類は、Program render selection issue `unlikely`、source mismatch `unlikely`、stale / last-valid reuse `not primary` だが `program_smooth_latest_stale_reuse_count=41` は watch 継続、continuous decoder / feed backlog `likely`。
+- continuous backlog の根拠は、Program が latest available continuous frame を render している一方で、その latest continuous frame が selected source より 16 frames 遅れていること。加えて `continuous_decode_output_throughput_fps=20.906`、`continuous_decode_latest_input_minus_latest_output_lag=41`、`continuous_decode_pending_correspondence_count=41`、pending age avg `1004.488ms`、completed latency avg `1486.485ms` / max `2228ms`、reader full-frame avg `47.295ms`、stdout reader blocked `2194`、no-output-after-input `2213`、output interval avg `46.466ms` / max `719ms` が backlog / throughput 側を示す。
 - smooth-latest 専用 diagnostics として
   `program_smooth_latest_selected_frame_id`、
   `program_smooth_latest_rendered_frame_id`、
@@ -75,19 +63,14 @@
   `program_smooth_latest_cache_age_ms`、
   `program_smooth_latest_frame_age_ms` を追加済み。
 - `validation_source_marker_style=large-corner-band-v2` の validation-only source marker は実装済み。P1 / P2 は大きな corner band、block glyph、位置差のある高コントラスト pattern で区別する。既定 behavior は marker disabled のまま。
-- client summary では `P1` / `P2` marker enable は確認できたが、この rerun で
-  `P2` が Program で human-visible、かつ `P1` が Program に出ていないという
-  repo-backed manual visual 証跡はまだ不足するため、selected-source visual
-  verification は `PASS` に上げない。
 - smooth-latest の latency / lag accept criteria と OBS safety checklist は docs
-  に定義済みだが、最新 rerun では lag が `Fail` になったため、ProgramOutput
-  closeout blocker は selected-source visual verification だけでなく lag
-  investigation も継続する。
+  に定義済みだが、最新 rerun では lag が `Warning` になったため、ProgramOutput
+  closeout blocker は lag / continuous backlog investigation と operator Preview requirement として継続する。
 - 現在の詳細は `docs/operations/obs-capture-validation.md` と `docs/operations/session-log.md` を参照する。
 
 ## 次にやること
-1. [ ] new `program_smooth_latest_*` diagnostics 付きで smooth-latest criteria rerun を行い、`56 / 56 / 56` が continuous decoder output lag、Program render stale reuse、source mismatch、feed/throughput backlog のどれかを確定する
-2. [ ] improved-marker rerun の manual visual 証跡を repo に残し、もし marker がまだ読みにくいなら marker/source visual strategy を次タスクに更新する
+1. [ ] continuous decoder / feed backlog を調査し、throughput below input、FFmpeg scale path、stdout read cadence、output interval、pending correspondence age、completed latency、reader blocked / no-output counts、decoded cache dropping、input feed vs output throughput を切り分ける
+2. [ ] 必要なら `continuous_decode_backlog_classification`、`continuous_decode_input_fps`、`continuous_decode_output_fps`、`continuous_decode_backlog_frame_gap`、`continuous_decode_backlog_age_ms`、`continuous_decode_stdout_waiting_for_frame_count`、`continuous_decode_output_throughput_vs_client_fps_ratio` のような最小 diagnostics を追加する
 3. [ ] 4-view Preview requirement を維持したまま、ProgramOutput non-FPS blocker audit を更新し、closeout blocked を継続する
 
 ## 保留 / 限定

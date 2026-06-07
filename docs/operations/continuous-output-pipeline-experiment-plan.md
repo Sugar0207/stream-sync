@@ -1360,7 +1360,55 @@ Current limitations:
     (`program_render_used_one_shot_fallback_count=1`,
     `program_startup_bootstrap_used_for_first_render=true`) rather than
     steady-state fallback
-- Latest completed-template criteria-based ProgramOutput validation rerun:
+- Latest smooth-latest lag diagnostics rerun:
+  - log dir:
+    `S:\stream-sync\manual-logs\program-output-smooth-latest-lag-rerun-20260607-002942`
+  - overall ProgramOutput criteria-based validation:
+    `WARNING`, not `PASS` and not `FAIL` after marker ambiguity correction
+  - corrected classifications:
+    OBS safety `PASS`, Program cleanliness `PASS`, selected-source visual
+    verification `PASS`, lag criteria `Warning`
+  - marker ambiguity correction:
+    the visible `P2` marker was the source-side validation marker. It must not
+    be treated as Program overlay, debug UI, Preview label, or 4-view UI.
+  - lag metrics:
+    `program_selected_source_frame_lag=16`,
+    `program_continuous_selected_frame_lag=16`,
+    `continuous_decode_latest_selected_to_output_frame_gap=16`,
+    `program_render_effective_fps=23.779`
+  - smooth-latest frame relation:
+    selected frame `3089`, rendered frame `3073`, latest continuous frame
+    `3073`, selected-minus-rendered lag `16`,
+    selected-minus-latest-continuous lag `16`,
+    rendered-minus-latest-continuous gap `0`, source mismatch count `0`,
+    stale reuse count `41`, cache age / frame age `1ms`
+  - interpretation:
+    Program render selection is unlikely to be the main issue because rendered
+    frame equals latest available continuous frame. Source mismatch is unlikely
+    because mismatch count is `0`. Stale / last-valid reuse is not primary, but
+    `program_smooth_latest_stale_reuse_count=41` remains a watch item. The
+    latest available continuous frame is still 16 frames behind the selected
+    source, so continuous decoder / feed backlog is the likely cause.
+  - backlog evidence:
+    `continuous_decode_output_throughput_fps=20.906`,
+    `continuous_decode_latest_input_minus_latest_output_lag=41`,
+    `continuous_decode_latest_input_to_output_frame_gap=41`,
+    `continuous_decode_output_lag_to_selected_frames=16`,
+    `continuous_decode_pending_correspondence_count=41`,
+    `continuous_decode_pending_correspondence_age_ms_avg=1004.488`,
+    `continuous_decode_completed_correspondence_latency_ms_avg=1486.485`,
+    `continuous_decode_completed_correspondence_latency_ms_max=2228`,
+    `continuous_decode_reader_full_frame_elapsed_ms_avg=47.295`,
+    `continuous_decode_reader_full_frame_slow_count=422`,
+    `continuous_decode_stdout_reader_blocked_count=2194`,
+    `continuous_decode_no_output_after_input_count=2213`,
+    `continuous_decode_output_frame_interval_ms_avg=46.466`,
+    `continuous_decode_output_frame_interval_ms_max=719`
+  - result handling:
+    the previous `56 / 56 / 56` `FAIL` is superseded by this latest `16 / 16 /
+    16` `WARNING`. ProgramOutput remains clean / selected-only, but closeout is
+    still blocked by lag/backlog and operator Preview requirements.
+- Previous completed-template criteria-based ProgramOutput validation rerun:
   - log dir:
     `D:\stream-sync\manual-logs\program-output-criteria-validation-20260606-001029`
   - overall ProgramOutput criteria-based validation:
@@ -1396,29 +1444,34 @@ Current limitations:
     ProgramOutput still gets no overlay, watermark, Preview label, or 4-view
     Program fallback.
 - Next candidate order:
-  1. Rerun the same smooth-latest criteria validation with the new
-     `program_smooth_latest_*` diagnostics. The code investigation indicates
-     the latest `56 / 56 / 56` most likely means the latest matching continuous
-     decoded frame and Program-rendered frame are both 56 frames behind the
-     selected source frame. The next rerun must confirm whether that is caused
-     by continuous decoder output lag, feed cadence / queue backlog, FFmpeg
-     throughput/stdout drain, stale last-valid reuse, or source mismatch.
-  2. Preserve repo-backed manual visual evidence for `P2` visible / not-`P1`
-     in Program, or move to marker/source visual strategy next if the marker
-     was still hard to read in practice.
-  3. Continue ProgramOutput non-FPS blocker audit and closeout criteria
+  1. Investigate continuous decoder / feed backlog. Start with throughput below
+     input, FFmpeg scale path, stdout read cadence, output interval, pending
+     correspondence age, completed latency, reader blocked count, no-output
+     counts, decoded cache dropping, and input feed vs output throughput.
+  2. Add only narrow diagnostics if the existing counters are not enough:
+     `continuous_decode_backlog_classification`,
+     `continuous_decode_input_fps`, `continuous_decode_output_fps`,
+     `continuous_decode_backlog_frame_gap`,
+     `continuous_decode_backlog_age_ms`,
+     `continuous_decode_stdout_waiting_for_frame_count`, and
+     `continuous_decode_output_throughput_vs_client_fps_ratio`.
+  3. Keep possible fixes narrow if evidence points clearly: no-scale or
+     lower-cost FFmpeg path, low-latency / probe args, aggressive pending decode
+     input dropping, decode only latest selected Program source, or workload
+     reduction. Do not change OBS setup or add Program overlays.
+  4. Continue ProgramOutput non-FPS blocker audit and closeout criteria
      definition: OBS capture safety run evidence, Program-first validation vs
      final operator mode, diagnostics completeness, and long-run stability.
-  4. Keep the production operator Preview requirement active while same-loop
+  5. Keep the production operator Preview requirement active while same-loop
      Preview cadence/runtime tuning stays paused; current Preview is stable
      snapshot-only and future work may move to a separate cadence/runtime or a
      lighter renderer.
-  5. Program source switching over hotkey/control pipe later, after
+  6. Program source switching over hotkey/control pipe later, after
      ProgramOutput criteria are defined.
-  6. human-side `no-scale-bgra` A/B rerun for the scale path split slice
-  7. reader/completed latency breakdown diagnostics if no-scale evidence is
+  7. human-side `no-scale-bgra` A/B rerun for the scale path split slice
+  8. reader/completed latency breakdown diagnostics if no-scale evidence is
      ambiguous
-  8. direct BGR24 render path docs-first impact review only
+  9. direct BGR24 render path docs-first impact review only
 - The `no-scale-bgra` code slice is already implemented; do not broaden it
   before runtime evidence.
 - Keep one-shot suppression as strong contributor evidence, but not the current
