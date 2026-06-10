@@ -69,6 +69,32 @@ Last updated: 2026-06-10
   should use them to decide whether total-run `program_render_effective_fps` is
   only a startup/loop-health blocker or also a steady-state Program FPS
   blocker.
+- latest after-first-render FPS rerun:
+  - `S:\stream-sync\manual-logs\program-output-after-first-render-fps-rerun-20260611-002339`
+  - Program cleanliness and after-first availability are `PASS`; black /
+    placeholder / missing-after-first are `0 / 0 / 0`, and
+    `program_window_render_failure_after_first_render=0`.
+  - Smooth-latest render lag is `PASS`:
+    `program_smooth_latest_selected_minus_rendered_lag=0` and
+    `program_smooth_latest_rendered_minus_latest_continuous_gap=0`.
+  - Program window render is not the bottleneck:
+    `program_window_render_elapsed_ms=303`, avg `0.337ms`, max `16ms`.
+  - Program FPS remains a shared-loop blocker:
+    total-run `13.207`, after-first-render `15.799`, and loop attempt fps
+    `17.558`.
+  - Largest current shared-loop reduction candidate is one-shot decode:
+    `one_shot_decode_elapsed_ms=5599`,
+    `continuous_decode_competing_one_shot_decode_elapsed_ms=5528`, and
+    `one_shot_decode_attempt_count=60`.
+  - Continuous decode backlog is still separate `WARNING`:
+    `continuous_decode_backlog_classification=pending_correspondence_backlog`,
+    gap/count `11 / 11`, with output/input fps ratio `0.988`.
+- Program-first validation mode now has a narrow opt-in diagnostics slice to
+  suppress Program-source Preview one-shot decode only when smooth-latest
+  continuous latest is available for the selected Program source. Watch
+  `program_first_suppressed_program_preview_one_shot_decode_count`,
+  `program_first_suppressed_program_preview_one_shot_decode_slot_counts`, and
+  `program_first_suppressed_program_preview_one_shot_decode_reason_counts`.
 - latest ProgramOutput unbounded handoff backlog rerun:
   - `S:\stream-sync\manual-logs\program-output-backlog-rerun-unbounded-handoff-20260608-014106`
   - overall criteria-based ProgramOutput validation is `FAIL` because lag

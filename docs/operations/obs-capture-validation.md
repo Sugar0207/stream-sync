@@ -872,6 +872,39 @@ Validated command examples for the Program path:
         these fields only observe the existing ProgramOutput tick/render call;
         they do not alter selected-source choice, smooth-latest behavior,
         rendering, OBS target separation, Preview cadence, or one-shot decode.
+      - latest after-first-render FPS rerun:
+        `S:\stream-sync\manual-logs\program-output-after-first-render-fps-rerun-20260611-002339`.
+        Program cleanliness, after-first-render availability, and smooth-latest
+        render lag are `PASS`: black / placeholder / missing-after-first are
+        `0 / 0 / 0`, `program_window_render_failure_after_first_render=0`,
+        `program_smooth_latest_selected_minus_rendered_lag=0`, and
+        `program_smooth_latest_rendered_minus_latest_continuous_gap=0`.
+      - Program window render itself is not the current bottleneck:
+        `program_window_render_elapsed_ms=303`,
+        `program_window_render_elapsed_ms_avg=0.337`, and
+        `program_window_render_elapsed_ms_max=16`.
+      - FPS remains a shared-loop blocker:
+        total-run `program_render_effective_fps=13.207`,
+        after-first-render `program_render_effective_fps_after_first_render=15.799`,
+        and `effective_attempt_fps=17.558`.
+      - likely shared-loop contributors in that rerun:
+        `one_shot_decode_elapsed_ms=5599`,
+        `continuous_decode_competing_one_shot_decode_elapsed_ms=5528`,
+        `one_shot_decode_attempt_count=60`,
+        `quad_view_compose_elapsed_ms=2487`, and
+        `render_buffer_materialization_elapsed_ms=1362`.
+      - opt-in ProgramOutput validation workload reduction:
+        use existing `--program-first-validation-mode` rather than a default
+        behavior change. Under smooth-latest continuous decode, when continuous
+        latest is already available for the selected Program source, the
+        Program-source Preview one-shot decode may be suppressed and the
+        operator Preview can reuse the Program continuous/latest frame.
+      - new suppression diagnostics to read:
+        `program_first_suppressed_program_preview_one_shot_decode_count`,
+        `program_first_suppressed_program_preview_one_shot_decode_slot_counts`,
+        and
+        `program_first_suppressed_program_preview_one_shot_decode_reason_counts`.
+        The current reason key is `continuous_latest_available`.
     - lag-focused validation checklist for any future rerun:
       - improved marker is visible and matches the selected source identity
       - client summaries include `validation_source_marker_style` and
@@ -886,6 +919,10 @@ Validated command examples for the Program path:
       - `program_continuous_selected_frame_lag`
       - `continuous_decode_latest_selected_to_output_frame_gap`
       - `program_render_effective_fps`
+      - `program_render_effective_fps_after_first_render`
+      - `program_first_suppressed_program_preview_one_shot_decode_count`
+      - `program_first_suppressed_program_preview_one_shot_decode_slot_counts`
+      - `program_first_suppressed_program_preview_one_shot_decode_reason_counts`
       - `program_render_used_one_shot_fallback_count`
       - whether one-shot fallback was startup-only or steady-state
       - `program_output_missing_after_first_render_count`
@@ -1401,6 +1438,9 @@ Validated command examples for the Program path:
   - `program_selected_source_frame_lag`
   - `program_first_suppressed_preview_one_shot_decode_count`
   - `program_first_suppressed_preview_one_shot_decode_slot_counts`
+  - `program_first_suppressed_program_preview_one_shot_decode_count`
+  - `program_first_suppressed_program_preview_one_shot_decode_slot_counts`
+  - `program_first_suppressed_program_preview_one_shot_decode_reason_counts`
   - `program_first_program_only_decode_path_enabled`
   - `program_first_remaining_one_shot_decode_count`
 - Long validation handoff budget guidance:

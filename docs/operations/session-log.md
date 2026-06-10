@@ -1,5 +1,88 @@
 <!-- stream-sync/docs/operations/session-log.md -->
 
+## 2026-06-11
+### Type
+- Codex ProgramOutput shared-loop one-shot workload reduction
+
+### Work
+- Recorded the latest after-first-render FPS rerun:
+  `S:\stream-sync\manual-logs\program-output-after-first-render-fps-rerun-20260611-002339`.
+- Kept ProgramOutput selection, smooth-latest render choice, OBS target
+  separation, and ProgramOutput window rendering behavior unchanged.
+- Found an existing opt-in validation/performance path:
+  `--program-first-validation-mode`, with existing low-cost Preview flags
+  `--program-first-preview-refresh-interval`,
+  `--program-first-preview-decode-refresh-interval`, and
+  `--operator-preview-snapshot-retention`.
+- Extended only the existing opt-in Program-first validation path so Program
+  source Preview one-shot decode is suppressed when:
+  ProgramOutput is enabled, smooth-latest continuous decode is enabled, and
+  continuous latest is already available for the selected Program source.
+- The suppression relies on the existing operator Preview Program-frame reuse
+  path, so the Program slot can reuse continuous/latest Program frames instead
+  of spawning a same-loop one-shot decode.
+
+### Rerun Interpretation
+- Program cleanliness: `PASS`.
+- Program availability after first render: `PASS`.
+- Smooth-latest render lag: `PASS`.
+- Program window render itself is not the bottleneck:
+  `program_window_render_elapsed_ms=303`,
+  `program_window_render_elapsed_ms_avg=0.337`, max `16`.
+- Program FPS remains below target:
+  total-run `program_render_effective_fps=13.207`,
+  after-first-render `program_render_effective_fps_after_first_render=15.799`,
+  and `effective_attempt_fps=17.558`.
+- The main shared-loop reduction candidate is one-shot decode:
+  `one_shot_decode_elapsed_ms=5599`,
+  `continuous_decode_competing_one_shot_decode_elapsed_ms=5528`,
+  `one_shot_decode_attempt_count=60`.
+- Preview compose/materialization is secondary:
+  `quad_view_compose_elapsed_ms=2487`,
+  `render_buffer_materialization_elapsed_ms=1362`.
+- Continuous decode backlog remains separate `WARNING`:
+  `continuous_decode_backlog_classification=pending_correspondence_backlog`,
+  gap/count `11 / 11`, output/input fps ratio `0.988`.
+
+### Added Diagnostics
+- `program_first_suppressed_program_preview_one_shot_decode_count`
+- `program_first_suppressed_program_preview_one_shot_decode_slot_counts`
+- `program_first_suppressed_program_preview_one_shot_decode_reason_counts`
+  - current reason key: `continuous_latest_available`
+
+### Files Changed
+- `apps/switcher/src/main.rs`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+- `docs/operations/obs-capture-validation.md`
+- `docs/operations/continuous-output-lag-plan.md`
+- `docs/operations/continuous-output-pipeline-experiment-plan.md`
+
+### TODO Update
+- Updated current position with the 2026-06-11 after-first-render FPS rerun.
+- Moved the immediate next task to a Program-first validation rerun that compares
+  Program-source Preview one-shot suppression counters against one-shot elapsed,
+  competing one-shot elapsed, after-first Program FPS, and operator Preview
+  Program-slot visibility.
+
+### Validation
+- `cargo fmt`
+  - result: PASS
+- `cargo check -p stream-sync-switcher`
+  - result: PASS
+  - note: existing dead-code warnings remain in switcher helper functions
+- `cargo test -p stream-sync-switcher switcher_four_view_two_real_handoff_preview_summary_formats_expected_fields`
+  - result: PASS, 1 bin test
+- `cargo test -p stream-sync-switcher program_first`
+  - result: PASS, 6 bin tests
+- `cargo test -p stream-sync-switcher smooth_latest`
+  - result: PASS, 2 bin tests
+- `cargo test -p stream-sync-switcher continuous_decode_backlog`
+  - result: PASS, 1 bin test
+- `git diff --check`
+  - result: PASS
+  - note: LF/CRLF warnings only
+
 ## 2026-06-10
 ### Type
 - Codex ProgramOutput FPS split diagnostics

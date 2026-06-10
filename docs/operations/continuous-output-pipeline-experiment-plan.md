@@ -1524,6 +1524,39 @@ Current limitations:
   - These diagnostics do not change ProgramOutput rendering behavior. They only
     make the next rerun able to separate startup waiting, after-first-render
     Program cadence, and Program tick/render elapsed from total-loop health.
+- Latest after-first-render FPS rerun:
+  `S:\stream-sync\manual-logs\program-output-after-first-render-fps-rerun-20260611-002339`.
+  - Program cleanliness / availability / smooth-latest render lag remain
+    `PASS`: black / placeholder / after-first missing are `0 / 0 / 0`,
+    after-first Program window failures are `0`, and smooth-latest
+    selected-rendered / rendered-latest gaps are `0 / 0`.
+  - Program window render itself is cheap:
+    `program_window_render_elapsed_ms=303`,
+    `program_window_render_elapsed_ms_avg=0.337`,
+    `program_window_render_elapsed_ms_max=16`.
+  - FPS is still below target because the shared loop is below target:
+    total-run Program FPS `13.207`, after-first-render Program FPS `15.799`,
+    loop attempt FPS `17.558`.
+  - The main reduction candidate is one-shot decode competing with continuous
+    smooth-latest decode:
+    `one_shot_decode_elapsed_ms=5599`,
+    `continuous_decode_competing_one_shot_decode_elapsed_ms=5528`,
+    and `one_shot_decode_attempt_count=60`.
+  - Preview compose/materialization is secondary:
+    `quad_view_compose_elapsed_ms=2487`,
+    `render_buffer_materialization_elapsed_ms=1362`.
+- Minimal code slice for the next validation:
+  extend existing opt-in `--program-first-validation-mode` behavior only when
+  ProgramOutput is enabled, continuous decode is smooth-latest, and continuous
+  latest is already available for the selected Program source. In that case,
+  suppress Program-source Preview one-shot decode and rely on the existing
+  operator Preview Program-frame reuse path. Default behavior and ProgramOutput
+  rendering stay unchanged.
+- New diagnostics for that slice:
+  `program_first_suppressed_program_preview_one_shot_decode_count`,
+  `program_first_suppressed_program_preview_one_shot_decode_slot_counts`, and
+  `program_first_suppressed_program_preview_one_shot_decode_reason_counts`
+  (`continuous_latest_available`).
 - Previous completed-template criteria-based ProgramOutput validation rerun:
   - log dir:
     `D:\stream-sync\manual-logs\program-output-criteria-validation-20260606-001029`
@@ -1560,11 +1593,10 @@ Current limitations:
     ProgramOutput still gets no overlay, watermark, Preview label, or 4-view
     Program fallback.
 - Next candidate order:
-  1. Rerun with Program FPS split diagnostics and compare total-run
-     `program_render_effective_fps` against
-     `program_render_effective_fps_after_first_render`,
-     `program_window_render_failure_before_first_render`, and
-     `program_window_render_failure_after_first_render`.
+  1. Rerun with the Program-source Preview one-shot suppression diagnostics and
+     compare one-shot elapsed/count, competing one-shot elapsed, attempt FPS,
+     after-first Program FPS, Program cleanliness, and operator Preview
+     Program-slot visibility.
   2. Investigate continuous decoder / feed backlog. Start with throughput below
      input, FFmpeg scale path, stdout read cadence, output interval, pending
      correspondence age, completed latency, reader blocked count, no-output
