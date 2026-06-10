@@ -2,7 +2,7 @@
 
 # Continuous Output Lag Plan
 
-Last updated: 2026-05-28
+Last updated: 2026-06-08
 
 ## Purpose
 - Analyze why slot0 continuous decoded output still trails the requested render frame after bounded feed helper and bounded-lag lookup wiring both reached runtime evidence.
@@ -13,6 +13,30 @@ Last updated: 2026-05-28
   move the next main line to output availability / throughput.
 
 ## Latest Evidence
+- latest ProgramOutput unbounded handoff backlog rerun:
+  - `S:\stream-sync\manual-logs\program-output-backlog-rerun-unbounded-handoff-20260608-014106`
+  - overall criteria-based ProgramOutput validation is `FAIL` because lag
+    criteria failed, even though OBS safety and Program cleanliness /
+    availability stayed `PASS`.
+  - Program rendered frame and latest continuous decoded frame matched
+    (`856`), while smooth-latest selected frame was `876`; selected-minus-
+    rendered and selected-minus-latest-continuous were both `20`, and
+    rendered-minus-latest-continuous was `0`.
+  - `program_selected_source_frame_lag=37` differs from the smooth-latest
+    selected/rendered lag `20`. Treat this as a diagnostics basis mismatch
+    candidate, not as proof that Program rendered an older frame than latest
+    continuous output.
+  - The real backlog evidence remains strong: input `859`, output `822`,
+    pending correspondence `37`, pending frame id range `857..893`, latest
+    decoded/output `856`, last input `893`,
+    `continuous_decode_backlog_classification=pending_correspondence_backlog`,
+    input fps `16.121`, output fps `15.426`, output/input ratio `0.957`,
+    reader slow count `222`, reader full-frame avg/max `64.182ms` / `4497ms`.
+  - Next rerun should read the new basis fields:
+    `program_selected_source_frame_lag_basis`,
+    `program_selected_source_frame_lag_basis_frame_id`, and
+    `program_selected_source_frame_lag_matches_smooth_latest`, then compare
+    them with the smooth-latest selected/rendered/latest-continuous frame ids.
 - latest ProgramOutput smooth-latest lag rerun:
   - `S:\stream-sync\manual-logs\program-output-smooth-latest-lag-rerun-20260607-002942`
   - Program rendered frame and latest continuous decoded frame matched
@@ -458,6 +482,13 @@ Implementation shape:
   same backlog shape in both completed and pending correspondence:
   - completed avg/max/latest `2624.940ms` / `5258ms` / `5251ms`
   - pending avg/max `2540.606ms` / `5300ms`
+- 2026-06-08 ProgramOutput lag basis diagnostics slice adds:
+  - `program_selected_source_frame_lag_basis`
+  - `program_selected_source_frame_lag_basis_frame_id`
+  - `program_selected_source_frame_lag_matches_smooth_latest`
+- These fields are summary-only and intended to distinguish the historical
+  `program_selected_source_frame_lag` requested/input-frame basis from the
+  smooth-latest selected/rendered/latest-continuous frame-id basis.
 - Held fields:
   - `continuous_decode_input_to_output_lag_frames_avg`
   - `continuous_decode_output_latency_frames_avg`

@@ -707,6 +707,49 @@ Validated command examples for the Program path:
         `large-corner-band-v2` is now recorded in the next rerun phase, but a
         repo-backed human-visible `P2` / not-`P1` confirmation is still
         pending
+    - latest unbounded handoff backlog rerun:
+      - log dir:
+        `S:\stream-sync\manual-logs\program-output-backlog-rerun-unbounded-handoff-20260608-014106`
+      - overall ProgramOutput criteria-based validation:
+        `FAIL`
+      - OBS safety:
+        `PASS`
+      - Program cleanliness / availability:
+        `PASS`
+      - selected-source visual verification:
+        `WARNING`
+      - lag criteria:
+        `Fail`
+      - availability facts:
+        `program_output_black_frame_render_count=0`,
+        `program_output_placeholder_render_count=0`,
+        `program_output_missing_after_first_render_count=0`
+      - lag facts:
+        `program_render_effective_fps=10.865`,
+        `program_selected_source_frame_lag=37`,
+        `program_continuous_selected_frame_lag=20`,
+        `continuous_decode_latest_input_to_output_frame_gap=37`,
+        `continuous_decode_backlog_classification=pending_correspondence_backlog`
+      - smooth-latest facts:
+        selected frame `876`, rendered frame `856`, latest continuous frame
+        `856`, selected-minus-rendered `20`,
+        selected-minus-latest-continuous `20`,
+        rendered-minus-latest-continuous `0`, cache age `1ms`
+      - interpretation:
+        Program appears to render the latest available continuous decoded frame
+        for the selected source. The remaining lag is primarily continuous
+        decode output / pending correspondence backlog, while
+        `program_selected_source_frame_lag=37` likely uses a different
+        requested/input-frame basis from the smooth-latest selected/rendered
+        lag `20`.
+      - added diagnostics for the next rerun:
+        `program_selected_source_frame_lag_basis`,
+        `program_selected_source_frame_lag_basis_frame_id`, and
+        `program_selected_source_frame_lag_matches_smooth_latest`.
+      - result handling:
+        do not close ProgramOutput near-MVP and do not call this run `PASS`.
+        Keep 4-view Preview as operator monitoring only, outside the OBS
+        Program scene.
     - lag-focused validation checklist for any future rerun:
       - improved marker is visible and matches the selected source identity
       - client summaries include `validation_source_marker_style` and

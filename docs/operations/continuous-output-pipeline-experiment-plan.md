@@ -1415,6 +1415,37 @@ Current limitations:
     the previous `56 / 56 / 56` `FAIL` is superseded by this latest `16 / 16 /
     16` `WARNING`. ProgramOutput remains clean / selected-only, but closeout is
     still blocked by lag/backlog and operator Preview requirements.
+- Latest unbounded handoff backlog rerun:
+  - log dir:
+    `S:\stream-sync\manual-logs\program-output-backlog-rerun-unbounded-handoff-20260608-014106`
+  - overall ProgramOutput criteria-based validation:
+    `FAIL`
+  - classifications:
+    OBS safety `PASS`, Program cleanliness / availability `PASS`,
+    selected-source visual verification `WARNING`, lag criteria `Fail`
+  - ProgramOutput stayed clean:
+    black / placeholder / after-first missing were all `0`
+  - lag metrics:
+    `program_render_effective_fps=10.865`,
+    `program_selected_source_frame_lag=37`,
+    `program_continuous_selected_frame_lag=20`,
+    `continuous_decode_latest_input_to_output_frame_gap=37`,
+    `continuous_decode_backlog_classification=pending_correspondence_backlog`
+  - smooth-latest frame relation:
+    selected frame `876`, rendered frame `856`, latest continuous frame `856`,
+    selected-minus-rendered `20`, selected-minus-latest-continuous `20`,
+    rendered-minus-latest-continuous `0`, cache age `1ms`
+  - interpretation:
+    Program selection is probably reading latest continuous output correctly.
+    The `37` lag is likely using the continuous requested/input frame basis,
+    while the actual smooth-latest selected/rendered relation is `20`. The
+    pending correspondence range `857..893` with latest output `856` still
+    points to real continuous decode output backlog.
+  - next basis diagnostics:
+    `program_selected_source_frame_lag_basis`,
+    `program_selected_source_frame_lag_basis_frame_id`, and
+    `program_selected_source_frame_lag_matches_smooth_latest` are added for the
+    next rerun.
 - Previous completed-template criteria-based ProgramOutput validation rerun:
   - log dir:
     `D:\stream-sync\manual-logs\program-output-criteria-validation-20260606-001029`
@@ -1451,14 +1482,17 @@ Current limitations:
     ProgramOutput still gets no overlay, watermark, Preview label, or 4-view
     Program fallback.
 - Next candidate order:
-  1. Rerun smooth-latest with the new backlog diagnostics and read input/output
-     fps, output/input ratio, backlog frame gap, backlog age, and backlog
+  1. Rerun unbounded handoff / smooth-latest with the new lag-basis diagnostics
+     and backlog diagnostics. Read `program_selected_source_frame_lag_basis`,
+     basis frame id, smooth-latest lag match/mismatch, input/output fps,
+     output/input ratio, backlog frame gap, backlog age, and backlog
      classification together with pending correspondence, reader blocked,
      no-output, output interval, and pipeline mode fields.
   2. Investigate continuous decoder / feed backlog. Start with throughput below
      input, FFmpeg scale path, stdout read cadence, output interval, pending
      correspondence age, completed latency, reader blocked count, no-output
-     counts, decoded cache dropping, and input feed vs output throughput.
+     counts, decoded cache dropping, input feed vs output throughput, and
+     whether selected-source feed priority is needed.
   3. Keep possible fixes narrow if evidence points clearly: no-scale or
      lower-cost FFmpeg path, low-latency / probe args, aggressive pending decode
      input dropping, decode only latest selected Program source, or workload

@@ -2,6 +2,96 @@
 
 ## 2026-06-08
 ### Type
+- Codex ProgramOutput unbounded handoff lag basis diagnostics
+
+### Work
+- Recorded the latest unbounded handoff ProgramOutput rerun:
+  `S:\stream-sync\manual-logs\program-output-backlog-rerun-unbounded-handoff-20260608-014106`.
+- Kept the run as overall `FAIL`:
+  OBS safety stayed `PASS`, Program cleanliness / availability stayed clean,
+  selected-source visual verification stayed `WARNING`, and lag criteria
+  failed.
+- Investigated the smooth-latest ProgramOutput code path without changing
+  ProgramOutput rendering behavior.
+- Added summary-only basis diagnostics to distinguish the existing
+  `program_selected_source_frame_lag` basis from the smooth-latest
+  selected/rendered/latest-continuous basis.
+- Kept ProgramOutput clean:
+  no Program overlay, watermark, Preview label, or 4-view-as-Program.
+
+### Code Path Findings
+- In the latest rerun, Program rendered frame `856` and latest continuous
+  decoded frame `856` matched, while smooth-latest selected frame was `876`.
+- Therefore smooth-latest likely picked the newest decoded Program frame right
+  before render; `program_smooth_latest_rendered_minus_latest_continuous_gap=0`
+  and cache age `1ms` support that read.
+- `program_selected_source_frame_lag=37` differs from the smooth-latest
+  selected-minus-rendered / selected-minus-latest-continuous lag `20`.
+- The likely explanation is basis mismatch:
+  `program_selected_source_frame_lag` is based on the continuous decode
+  requested/input frame id, while smooth-latest selected/rendered lag is based
+  on the selected source frame actually considered by ProgramOutput.
+- The continuous backlog is still real:
+  input `859`, output `822`, pending correspondence `37`, pending frame id
+  range `857..893`, latest decoded/output frame `856`, and last input frame
+  `893` form a contiguous writer-to-reader/output backlog.
+- `program_render_effective_fps=10.865` is also a blocker. The current slice
+  does not optimize it; it only makes the next rerun able to separate
+  diagnostics basis mismatch from real decode/output delay.
+
+### Added Diagnostics
+- `program_selected_source_frame_lag_basis`
+- `program_selected_source_frame_lag_basis_frame_id`
+- `program_selected_source_frame_lag_matches_smooth_latest`
+
+### Next Rerun Values
+- `program_selected_source_frame_lag`
+- `program_selected_source_frame_lag_basis`
+- `program_selected_source_frame_lag_basis_frame_id`
+- `program_selected_source_frame_lag_matches_smooth_latest`
+- `program_smooth_latest_selected_frame_id`
+- `program_smooth_latest_rendered_frame_id`
+- `program_smooth_latest_latest_continuous_frame_id`
+- `program_smooth_latest_selected_minus_rendered_lag`
+- `program_smooth_latest_selected_minus_latest_continuous_lag`
+- `program_smooth_latest_rendered_minus_latest_continuous_gap`
+- `continuous_decode_input_frame_count`
+- `continuous_decode_output_frame_count`
+- `continuous_decode_latest_input_to_output_frame_gap`
+- `continuous_decode_pending_correspondence_count`
+- `continuous_decode_pending_correspondence_frame_id_min`
+- `continuous_decode_pending_correspondence_frame_id_max`
+- `continuous_decode_backlog_classification`
+- `continuous_decode_reader_full_frame_elapsed_ms_avg`
+- `continuous_decode_reader_full_frame_elapsed_ms_max`
+- `continuous_decode_output_frame_interval_ms_avg`
+- `continuous_decode_output_frame_interval_ms_max`
+- `program_render_effective_fps`
+
+### TODO Update
+- Updated the current position with the 2026-06-08 unbounded handoff rerun
+  `FAIL`.
+- Moved the next task to a basis-diagnostics rerun before any optimization.
+- Kept ProgramOutput closeout blocked and same-loop Preview tuning paused.
+
+### Validation
+- `cargo fmt`
+  - result: PASS
+- `cargo check -p stream-sync-switcher`
+  - result: PASS
+  - note: existing dead-code warnings remain in switcher helper functions
+- `cargo test -p stream-sync-switcher switcher_four_view_two_real_handoff_preview_summary_formats_expected_fields`
+  - result: PASS, 1 bin test
+- `cargo test -p stream-sync-switcher smooth_latest`
+  - result: PASS, 2 bin tests
+- `cargo test -p stream-sync-switcher continuous_decode_backlog`
+  - result: PASS, 1 bin test
+- `git diff --check`
+  - result: PASS
+  - note: LF/CRLF warnings only
+
+## 2026-06-08
+### Type
 - Codex continuous decode backlog instrumentation
 
 ### Work
