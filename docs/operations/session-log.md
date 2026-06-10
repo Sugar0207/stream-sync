@@ -2,6 +2,130 @@
 
 ## 2026-06-10
 ### Type
+- Codex ProgramOutput render FPS basis investigation
+
+### Work
+- Investigated why the latest lag-basis rerun reported
+  `program_render_effective_fps=12.253`.
+- Kept ProgramOutput rendering behavior unchanged.
+- Made no Rust code changes in this step.
+- Updated the closeout docs to separate:
+  - Program smooth-latest render lag
+  - Program render success cadence / metric basis
+  - shared-loop Preview / one-shot workload
+
+### Code Path Findings
+- `program_render_effective_fps` is calculated as
+  `program_window_render_success_count / loop_total_elapsed_ms`.
+- The denominator is total loop elapsed time from loop start, not elapsed time
+  after first Program render.
+- `program_window_render_failure_count` increments on every Program-enabled
+  loop attempt whose Program tick did not render.
+- In the latest rerun, `program_window_render_failure_count=241` matches
+  `program_output_missing_before_first_render_count=241`, while
+  `program_output_missing_after_first_render_count=0`.
+- Therefore the 241 Program failures are startup availability / first-render
+  waiting, not after-first-render Program instability.
+- After first render, Program availability was clean: every remaining Program
+  attempt rendered successfully (`659` successes after `241` startup misses).
+- The current total-run Program FPS metric penalizes first-render wait and can
+  overstate steady-state Program instability.
+
+### Runtime Counter Interpretation
+- `program_render_loop_attempt_count=900` over `loop_total_elapsed_ms=53781`
+  implies total attempt cadence of about `16.734fps`.
+- `program_window_render_success_count=659` over the same total elapsed time
+  gives the recorded `program_render_effective_fps=12.253`.
+- The low total-run Program FPS is therefore a combination of:
+  - first-render startup misses in the denominator
+  - loop attempt cadence below 30fps
+  - shared-loop body cost added before the fixed cadence sleep
+- The loop sleeps the configured cadence after each attempt rather than
+  subtracting attempt body time from the frame interval. With
+  `attempt_body_elapsed_ms=21842` and `loop_sleep_elapsed_ms=29835`, body work
+  is effectively added on top of the 30fps sleep cadence.
+- `avg_attempt_elapsed_ms=24.269`, `max_attempt_elapsed_ms=1023`, and
+  `slow_attempt_count=62` show meaningful shared-loop body cost.
+
+### Workload Attribution
+- `render_elapsed_ms=3218`, `render_call_elapsed_ms=3218`,
+  `render_buffer_cpu_scale_copy_elapsed_ms=1824`,
+  `render_backend_wait_elapsed_ms=1124`, `gdi_paint_wait_elapsed_ms=1070`,
+  and `quad_view_compose_elapsed_ms=3045` are collected through
+  `ObsFriendlyFourViewLoopWindowRenderRuntime`, which wraps the 4-view
+  Preview / clean-output render runtime.
+- Those timings are not Program-window-only render timings. ProgramOutput uses
+  the separate `program_render_runtime` and currently reports success/failure
+  counts, not dedicated Program render elapsed.
+- One-shot decode remains the largest explicitly measured shared-loop body
+  contributor in the latest rerun:
+  - `one_shot_decode_attempt_count=59`
+  - `one_shot_decode_elapsed_ms=6235`
+  - `one_shot_decode_output_read_elapsed_ms=3131`
+  - `one_shot_decode_stdin_write_to_stdout_first_byte_elapsed_ms=2654`
+  - `continuous_decode_competing_one_shot_decode_elapsed_ms=6131`
+  - `continuous_decode_competing_one_shot_attempt_count=58`
+- Preview compose/render and GDI wait are secondary contributors; they matter
+  because they run in the same loop, but the latest evidence does not prove
+  Program GDI rendering itself is the bottleneck.
+
+### Judgment
+- The latest `program_render_effective_fps=12.253` is primarily a metric basis
+  and shared-loop cadence problem, not a Program smooth-latest render-lag or
+  Program cleanliness problem.
+- Program render success after first render should be treated as `PASS`.
+- Total-run Program FPS remains a closeout `WARNING/FAIL` signal for overall
+  loop performance, but it should not be the only primary ProgramOutput
+  steady-state FPS gate.
+- First-render-before-missing should be separated from after-first-render
+  cadence in closeout criteria.
+
+### Suggested Minimal Follow-up
+- Add or derive summary-only Program FPS diagnostics before any large
+  optimization:
+  - `program_rendered_after_first_render`
+  - `program_render_effective_fps_after_first_render`
+  - `program_window_render_failure_before_first_render`
+  - `program_window_render_failure_after_first_render`
+  - optional Program-only render elapsed if a small wrapper can measure
+    `program_render_runtime` without changing rendering behavior
+- Keep rendering behavior unchanged until those diagnostics confirm whether the
+  closeout issue is criteria-only or requires same-loop workload reduction.
+- Investigate one-shot decode / Preview workload separately from Program
+  smooth-latest selection.
+
+### Status
+- Program cleanliness: `PASS`
+- Program availability after first render: `PASS`
+- Smooth-latest selection correctness: `PASS`
+- Smooth-latest render lag: `PASS`
+- Program after-first-render success cadence: `PASS` by count
+- Total-run Program FPS: `FAIL` / basis needs criteria split
+- Shared-loop workload: `WARNING`
+- Continuous decode backlog: `WARNING`
+- Overall closeout: `blocked`
+
+### Files Changed
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+- `docs/operations/obs-capture-validation.md`
+- `docs/operations/continuous-output-lag-plan.md`
+- `docs/operations/continuous-output-pipeline-experiment-plan.md`
+
+### TODO Update
+- Moved the next ProgramOutput FPS work from root-cause discovery to criteria
+  split and optional summary-only diagnostics.
+- Kept continuous backlog, one-shot / Preview workload, and selected-source
+  visual confirmation as active follow-ups.
+
+### Validation
+- Docs-only change at time of entry.
+- `git diff --check`
+  - result: PASS
+  - note: LF/CRLF warnings only
+
+## 2026-06-10
+### Type
 - Codex ProgramOutput lag basis rerun record
 
 ### Work

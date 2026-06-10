@@ -1483,6 +1483,36 @@ Current limitations:
     because `program_render_effective_fps=12.253`; overall closeout remains
     blocked until render FPS improves and selected-source visual verification
     is human-confirmed for this rerun.
+- Latest Program render FPS basis investigation:
+  - `program_render_effective_fps` is total-run Program success FPS:
+    `program_window_render_success_count / loop_total_elapsed_ms`.
+  - The latest `241` Program window render failures match
+    `program_output_missing_before_first_render_count=241`; after-first-render
+    missing stayed `0`, so this is startup wait, not steady-state Program
+    output unavailability.
+  - Program after-first-render success is count-level `PASS`: `659` successes
+    after the startup missing period.
+  - Total attempt cadence is already low: `900 / 53781ms`, about `16.734fps`.
+  - Shared-loop timing explains the cadence drop better than Program-only
+    render cost:
+    `attempt_body_elapsed_ms=21842` plus fixed cadence sleep
+    `loop_sleep_elapsed_ms=29835`; the loop sleeps after body work rather than
+    subtracting body time from the frame interval.
+  - Preview/clean-output timings are not Program-only timings:
+    `quad_view_compose_elapsed_ms=3045`,
+    `render_call_elapsed_ms=3218`,
+    `render_buffer_cpu_scale_copy_elapsed_ms=1824`, and
+    `gdi_paint_wait_elapsed_ms=1070` are collected through the Preview
+    `ObsFriendlyFourViewLoopWindowRenderRuntime`.
+  - One-shot decode is the largest clearly measured shared-loop body cost:
+    `one_shot_decode_elapsed_ms=6235`,
+    `one_shot_decode_output_read_elapsed_ms=3131`, and
+    `continuous_decode_competing_one_shot_decode_elapsed_ms=6131`.
+  - Result:
+    treat total-run Program FPS as overall loop health `FAIL`, but do not read
+    it as Program smooth-latest render lag or Program cleanliness failure.
+    Closeout should split startup, after-first-render Program success cadence,
+    and shared-loop workload.
 - Previous completed-template criteria-based ProgramOutput validation rerun:
   - log dir:
     `D:\stream-sync\manual-logs\program-output-criteria-validation-20260606-001029`
@@ -1519,14 +1549,15 @@ Current limitations:
     ProgramOutput still gets no overlay, watermark, Preview label, or 4-view
     Program fallback.
 - Next candidate order:
-  1. Investigate continuous decoder / feed backlog. Start with throughput below
+  1. Split Program FPS criteria and diagnostics: keep total-run
+     `program_render_effective_fps` as loop-health, but add/derive
+     after-first-render Program success cadence before treating Program
+     steady-state FPS as failed.
+  2. Investigate continuous decoder / feed backlog. Start with throughput below
      input, FFmpeg scale path, stdout read cadence, output interval, pending
      correspondence age, completed latency, reader blocked count, no-output
      counts, decoded cache dropping, input feed vs output throughput, and
      whether selected-source feed priority is needed.
-  2. Investigate low Program render FPS separately from smooth-latest render
-     lag. Start with `program_window_render_failure_count`,
-     missing-before-first-render, render-loop cadence, and same-loop cost.
   3. Keep possible fixes narrow if evidence points clearly: no-scale or
      lower-cost FFmpeg path, low-latency / probe args, aggressive pending decode
      input dropping, decode only latest selected Program source, or workload

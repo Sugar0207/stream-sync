@@ -804,6 +804,60 @@ Validated command examples for the Program path:
         FPS `FAIL`, overall closeout still `blocked` because render FPS remains
         low and selected-source visual verification still needs human
         confirmation for this rerun.
+    - Program render FPS basis investigation:
+      - code definition:
+        `program_render_effective_fps` is
+        `program_window_render_success_count / loop_total_elapsed_ms`.
+      - denominator scope:
+        total loop elapsed is used, not elapsed-after-first-Program-render.
+      - failure scope:
+        `program_window_render_failure_count` increments for any
+        Program-enabled attempt where the Program tick did not render.
+      - latest rerun interpretation:
+        `program_window_render_failure_count=241` matches
+        `program_output_missing_before_first_render_count=241`, while
+        `program_output_missing_after_first_render_count=0`. The failures are
+        first-render startup availability waits, not after-first-render Program
+        instability.
+      - Program steady-state availability:
+        after the startup missing period, the remaining `659` Program attempts
+        rendered successfully.
+      - loop cadence:
+        `program_render_loop_attempt_count=900` over
+        `loop_total_elapsed_ms=53781` is about `16.734fps`, so the loop itself
+        ran below 30fps before Program success filtering.
+      - shared-loop cost:
+        `attempt_body_elapsed_ms=21842` is added before the fixed
+        `loop_sleep_elapsed_ms=29835` / `frame_interval_wait_elapsed_ms=29835`.
+        Because the loop sleeps the configured cadence after body work, body
+        cost lowers effective attempt cadence.
+      - timing ownership:
+        `render_elapsed_ms`, `render_buffer_cpu_scale_copy_elapsed_ms`,
+        `gdi_paint_wait_elapsed_ms`, and `quad_view_compose_elapsed_ms` are
+        Preview / clean-output timings collected through
+        `ObsFriendlyFourViewLoopWindowRenderRuntime`, not Program-window-only
+        render timings.
+      - largest measured shared-loop contributor:
+        one-shot decode remains significant even in Program smooth-latest runs:
+        `one_shot_decode_attempt_count=59`,
+        `one_shot_decode_elapsed_ms=6235`, and
+        `continuous_decode_competing_one_shot_decode_elapsed_ms=6131`.
+      - judgment:
+        the low total-run Program FPS is primarily metric basis plus shared-loop
+        cadence/workload. It is not evidence that smooth-latest selected the
+        wrong frame, that Program cleanliness failed, or that Program GDI
+        rendering alone is the bottleneck.
+      - criteria update:
+        use total-run `program_render_effective_fps` as an overall loop health
+        warning/fail signal, but define the primary Program steady-state FPS
+        closeout gate around after-first-render Program success cadence.
+      - recommended summary-only diagnostics:
+        `program_rendered_after_first_render`,
+        `program_render_effective_fps_after_first_render`,
+        `program_window_render_failure_before_first_render`, and
+        `program_window_render_failure_after_first_render`; optional Program-only
+        render elapsed may be added later if it can wrap `program_render_runtime`
+        without changing rendering behavior.
     - lag-focused validation checklist for any future rerun:
       - improved marker is visible and matches the selected source identity
       - client summaries include `validation_source_marker_style` and
@@ -1215,6 +1269,16 @@ Validated command examples for the Program path:
       `continuous_decode_backlog_classification`,
       `continuous_decode_backlog_frame_gap`, and
       `continuous_decode_pending_correspondence_count`
+  - Program FPS acceptance:
+    - total-run `program_render_effective_fps` is an overall loop-health metric
+      and may include startup missing before first render
+    - after-first-render Program success cadence should be the primary
+      steady-state Program FPS gate
+    - first-render-before-missing should be judged under startup readiness, not
+      as steady-state Program render instability
+    - Preview / clean-output render timings must not be treated as Program-only
+      render timings unless a dedicated Program render timing diagnostic is
+      added
     - perceived smoothness, black / placeholder count, one-shot fallback count,
       Program FPS, and visual source verification are included together rather
       than treating lag as a single-number gate

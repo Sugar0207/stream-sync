@@ -37,6 +37,24 @@ Last updated: 2026-06-10
   - Overall closeout remains blocked by low render FPS
     (`program_render_effective_fps=12.253`) and missing human selected-source
     visual confirmation for this rerun.
+- latest Program render FPS basis investigation:
+  - `program_render_effective_fps` is calculated from
+    `program_window_render_success_count / loop_total_elapsed_ms`, so it uses
+    total loop elapsed rather than elapsed after first Program render.
+  - `program_window_render_failure_count=241` matches
+    `program_output_missing_before_first_render_count=241`, while
+    `program_output_missing_after_first_render_count=0`. These failures are
+    first-render startup waiting, not steady-state Program render failures.
+  - `program_render_loop_attempt_count=900` over `loop_total_elapsed_ms=53781`
+    yields about `16.734fps` attempt cadence, meaning the loop itself is already
+    below 30fps.
+  - The measured heavy work is shared-loop work: one-shot decode `6235ms`
+    (`6131ms` competing with continuous decode), Preview compose `3045ms`,
+    Preview render call `3218ms`, buffer copy/materialization `1824ms`, and GDI
+    paint wait `1070ms`.
+  - The current evidence does not prove Program-window-only render performance
+    is the bottleneck. It points to metric basis plus shared-loop cadence and
+    one-shot / Preview workload.
 - latest ProgramOutput unbounded handoff backlog rerun:
   - `S:\stream-sync\manual-logs\program-output-backlog-rerun-unbounded-handoff-20260608-014106`
   - overall criteria-based ProgramOutput validation is `FAIL` because lag
