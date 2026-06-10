@@ -95,6 +95,34 @@ Last updated: 2026-06-10
   `program_first_suppressed_program_preview_one_shot_decode_count`,
   `program_first_suppressed_program_preview_one_shot_decode_slot_counts`, and
   `program_first_suppressed_program_preview_one_shot_decode_reason_counts`.
+- latest Program-first suppression rerun:
+  - `S:\stream-sync\manual-logs\program-output-program-first-suppression-rerun-20260611-005543`
+  - This is valid ProgramOutput validation/performance-mode evidence with
+    `--program-first-validation-mode`; it is not normal operator 4-view Preview
+    monitoring evidence.
+  - Program steady-state is strong: black / placeholder /
+    missing-after-first `0 / 0 / 0`,
+    `program_window_render_failure_after_first_render=0`,
+    smooth-latest selected-rendered / rendered-latest gaps `0 / 0`, and source
+    mismatch `0`.
+  - Aggregate one-shot suppression worked:
+    one-shot attempts / elapsed and competing one-shot attempts / elapsed are
+    all `0`.
+  - After-first Program FPS improved to `21.848`; loop attempt fps improved to
+    `23.432`, attempt body elapsed dropped to `6872ms`, and slow attempts
+    dropped to `4`.
+  - Continuous decode remains around the current input/decode ceiling:
+    `continuous_decode_output_throughput_fps=20.249`,
+    output/input ratio `0.980`, client effective output fps around `21fps`.
+  - Startup remains `WARNING`:
+    first render `11038ms`, missing before first render `301`, startup one-shot
+    fallback attempts `0`, startup one-shot fallback suppressed `54`.
+  - Operator Preview in this mode is `FAIL` / not applicable for normal
+    monitoring: `frames_rendered=0` and
+    `clean_output_render_result_kind=NoRenderableQuadView`.
+  - Program-source-specific suppression count stayed `0`; use aggregate
+    one-shot counters as the pass signal for this rerun unless diagnostic
+    wording is clarified later.
 - latest ProgramOutput unbounded handoff backlog rerun:
   - `S:\stream-sync\manual-logs\program-output-backlog-rerun-unbounded-handoff-20260608-014106`
   - overall criteria-based ProgramOutput validation is `FAIL` because lag

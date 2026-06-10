@@ -2,6 +2,115 @@
 
 ## 2026-06-11
 ### Type
+- Codex Program-first suppression rerun docs update
+
+### Work
+- Recorded the latest Program-first suppression rerun:
+  `S:\stream-sync\manual-logs\program-output-program-first-suppression-rerun-20260611-005543`.
+- Kept this step docs-only. No Rust code changed.
+- Classified `--program-first-validation-mode` as ProgramOutput
+  validation/performance mode, not normal operator 4-view monitoring mode.
+- Updated closeout wording so ProgramOutput-only validation is distinguished
+  from normal Program + operator Preview coexistence.
+
+### Rerun Evidence
+- Rerun validity: `PASS` for Program-first suppression / ProgramOutput
+  validation mode.
+- Program cleanliness: `PASS`.
+  - `program_output_black_frame_render_count=0`
+  - `program_output_placeholder_render_count=0`
+  - `program_output_missing_after_first_render_count=0`
+- Program availability after first render: `PASS`.
+  - `program_window_render_failure_after_first_render=0`
+- Smooth-latest render lag: `PASS`.
+  - `program_smooth_latest_selected_minus_rendered_lag=0`
+  - `program_smooth_latest_rendered_minus_latest_continuous_gap=0`
+  - `program_smooth_latest_source_mismatch_count=0`
+- Aggregate one-shot suppression: `PASS`.
+  - `one_shot_decode_attempt_count=0`
+  - `one_shot_decode_elapsed_ms=0`
+  - `continuous_decode_competing_one_shot_decode_elapsed_ms=0`
+  - `continuous_decode_competing_one_shot_attempt_count=0`
+- Program after-first FPS improved:
+  - previous `15.799`
+  - current `21.848`
+- Loop workload improved:
+  - `effective_attempt_fps=17.558 -> 23.432`
+  - `attempt_body_elapsed_ms=19244 -> 6872`
+  - `slow_attempt_count=65 -> 4`
+- Continuous decode remains near the current input/decode ceiling:
+  - `continuous_decode_output_throughput_fps=20.249`
+  - `continuous_decode_output_to_input_fps_ratio=0.980`
+  - client effective output fps around `21fps`
+
+### Caveats
+- Operator 4-view Preview was effectively suppressed and is not usable for
+  normal monitoring in this mode:
+  - `frames_rendered=0`
+  - `clean_output_render_result_kind=NoRenderableQuadView`
+  - `program_first_preview_visible=false`
+  - `program_first_preview_suppressed_count=899`
+  - `preview_compose_skipped_for_program_count=899`
+  - `quad_view_compose_elapsed_ms=0`
+- Program-source-specific suppression diagnostic did not fire:
+  - `program_first_suppressed_program_preview_one_shot_decode_count=0`
+  - selected Program source was player2 / slot1
+  - aggregate one-shot suppression still succeeded through the existing
+    Program-first Preview suppression path
+- Startup got worse:
+  - `program_output_first_render_elapsed_ms=11038`
+  - `program_output_missing_before_first_render_count=301`
+  - `program_startup_one_shot_fallback_attempt_count=0`
+  - `program_startup_one_shot_fallback_suppressed_count=54`
+
+### Interpretation
+- ProgramOutput steady-state in validation/performance mode is strong:
+  no black, no placeholder, no missing-after-first, smooth-latest lag `0`, and
+  after-first FPS near the current input/decode ceiling.
+- Program-first one-shot suppression should be treated as `PASS` by aggregate
+  one-shot counters, even though the Program-source-specific attribution field
+  stayed `0`.
+- Remaining normal-operation concern is Program + operator 4-view Preview
+  coexistence.
+- If final closeout is ProgramOutput-only, this mode is close to `PASS` pending
+  selected-source visual confirmation.
+- If final closeout requires usable operator 4-view Preview at the same time,
+  closeout remains blocked until a separate low-cost Preview strategy or
+  separate Preview cadence/runtime exists.
+
+### Status
+- Program cleanliness: `PASS`
+- Program availability after first render: `PASS`
+- Smooth-latest render lag: `PASS`
+- Program-first one-shot suppression: `PASS`
+- Program after-first FPS in validation mode: `PASS/WARNING`
+- Startup first render delay: `WARNING`
+- Operator 4-view Preview usability in Program-first mode: `FAIL` / not
+  applicable
+- Normal-mode Program + operator Preview coexistence: open
+- Overall closeout: blocked until selected-source visual confirmation and
+  closeout scope are decided
+
+### Files Changed
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+- `docs/operations/obs-capture-validation.md`
+- `docs/operations/continuous-output-lag-plan.md`
+- `docs/operations/continuous-output-pipeline-experiment-plan.md`
+
+### TODO Update
+- Replaced the already-completed Program-first suppression rerun task with:
+  closeout scope split, selected-source visual confirmation for the latest
+  rerun, and normal Program + operator Preview coexistence work.
+
+### Validation
+- Docs-only change.
+- `git diff --check`
+  - result: PASS
+  - note: LF/CRLF warnings only
+
+## 2026-06-11
+### Type
 - Codex ProgramOutput shared-loop one-shot workload reduction
 
 ### Work

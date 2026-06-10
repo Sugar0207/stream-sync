@@ -66,7 +66,9 @@
 - latest rerun の重い shared-loop 要素は one-shot decode `6235ms` / competing one-shot `6131ms`、Preview compose `3045ms`、Preview render call `3218ms`、render buffer copy/materialization `1824ms`、GDI paint wait `1070ms`。closeout blocker は Program smooth-latest render lag ではなく、shared loop cadence と competing one-shot / Preview workload として扱う。
 - 最新 after-first-render FPS rerun は `S:\stream-sync\manual-logs\program-output-after-first-render-fps-rerun-20260611-002339`。Program cleanliness / after-first availability / smooth-latest render lag は `PASS`。Program window render は `program_window_render_elapsed_ms=303`、avg `0.337ms`、max `16ms` で bottleneck ではない。
 - total-run Program FPS `13.207` と after-first-render FPS `15.799` はまだ低く、loop attempt fps `17.558`。shared-loop workload、特に one-shot decode `5599ms` / competing one-shot `5528ms` が次の opt-in validation target。
-- Program-first validation mode で、smooth-latest continuous latest が selected Program source に available な tick だけ Program-source Preview one-shot decode を抑制する最小 diagnostics slice を実装中。既定動作と ProgramOutput render behavior は変えない。
+- 最新 Program-first suppression rerun は `S:\stream-sync\manual-logs\program-output-program-first-suppression-rerun-20260611-005543`。`--program-first-validation-mode` 条件で Program cleanliness / after-first availability / smooth-latest render lag は `PASS`、one-shot decode は aggregate で `0`、after-first Program FPS は `15.799 -> 21.848`、effective attempt FPS は `17.558 -> 23.432` に改善した。
+- 同 rerun では operator 4-view Preview は実質 suppressed。`frames_rendered=0`、`clean_output_render_result_kind=NoRenderableQuadView`、`program_first_preview_visible=false`、`program_first_preview_suppressed_count=899`、`preview_compose_skipped_for_program_count=899`、`quad_view_compose_elapsed_ms=0`。`--program-first-validation-mode` は ProgramOutput validation/performance mode であり、通常の operator monitoring mode ではない。
+- Program-source-specific suppression diagnostic は `program_first_suppressed_program_preview_one_shot_decode_count=0` だったが、aggregate one-shot suppression は既存の Program-first Preview suppression path で成功した。必要なら次回以降に diagnostic wording / reason attribution だけを明確化する。
 - smooth-latest 専用 diagnostics として
   `program_smooth_latest_selected_frame_id`、
   `program_smooth_latest_rendered_frame_id`、
@@ -87,9 +89,10 @@
 - 現在の詳細は `docs/operations/obs-capture-validation.md` と `docs/operations/session-log.md` を参照する。
 
 ## 次にやること
-1. [ ] Program-first validation mode の Program-source Preview one-shot suppression rerun を実行し、`program_first_suppressed_program_preview_one_shot_decode_count`、slot counts、reason counts、`one_shot_decode_attempt_count`、`one_shot_decode_elapsed_ms`、`continuous_decode_competing_one_shot_decode_elapsed_ms`、after-first Program FPS を比較する
-2. [ ] continuous decoder / feed backlog を調査し、throughput below input、FFmpeg scale path、stdout read cadence、output interval、pending correspondence age、completed latency、reader blocked / no-output counts、decoded cache dropping、input feed vs output throughput、selected-source feed priority の要否を切り分ける
-3. [ ] selected-source visual verification を latest validation 条件で human confirmation し、P2 visible / P1 absent を repo-backed evidence として残す
+1. [ ] ProgramOutput-only closeout と normal operator 4-view Preview coexistence closeout の scope を分けて判定し、Program-first validation mode を final operator monitoring mode と誤分類しない
+2. [ ] selected-source visual verification を latest Program-first suppression rerun 条件で human confirmation し、P2 visible / P1 absent を repo-backed evidence として残す
+3. [ ] normal-mode Program + operator 4-view Preview coexistence を設計/検証する。必要なら separate Preview cadence/runtime、低コスト Preview refresh strategy、または dedicated monitoring mode を検討する
+4. [ ] continuous decoder / feed backlog を調査し、throughput below input、FFmpeg scale path、stdout read cadence、output interval、pending correspondence age、completed latency、reader blocked / no-output counts、decoded cache dropping、input feed vs output throughput、selected-source feed priority の要否を切り分ける
 
 ## 保留 / 限定
 - same-loop low-cost Preview refresh tuning
@@ -122,6 +125,7 @@
 - [x] validation-only client/source-side visual marker は最小実装済み
 - [x] validation-only source marker visibility improvement は実装済み
 - [x] selected-source marker reference validation は draft `Good` lag criteria に暫定一致
+- [x] Program-first suppression validation rerun は記録済み
 - [x] OBS ProgramOutput capture safety checklist / operator preflight / manual validation template は docs に定義済み
 - [x] `large-corner-band-v2` criteria-based ProgramOutput rerun は記録済み
 

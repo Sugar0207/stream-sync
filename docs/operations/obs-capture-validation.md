@@ -905,6 +905,55 @@ Validated command examples for the Program path:
         and
         `program_first_suppressed_program_preview_one_shot_decode_reason_counts`.
         The current reason key is `continuous_latest_available`.
+      - latest Program-first suppression rerun:
+        `S:\stream-sync\manual-logs\program-output-program-first-suppression-rerun-20260611-005543`.
+        The switcher included `--program-first-validation-mode`; treat this run
+        as ProgramOutput validation/performance mode, not as normal operator
+        4-view monitoring validation.
+      - ProgramOutput validation-mode result:
+        rerun validity `PASS`; Program cleanliness `PASS`; after-first
+        availability `PASS`; smooth-latest render lag `PASS`.
+        Black / placeholder / missing-after-first were `0 / 0 / 0`,
+        `program_window_render_failure_after_first_render=0`,
+        `program_smooth_latest_selected_minus_rendered_lag=0`,
+        `program_smooth_latest_rendered_minus_latest_continuous_gap=0`, and
+        `program_smooth_latest_source_mismatch_count=0`.
+      - one-shot suppression result:
+        aggregate one-shot decode suppression worked:
+        `one_shot_decode_attempt_count=0`,
+        `one_shot_decode_elapsed_ms=0`,
+        `continuous_decode_competing_one_shot_decode_elapsed_ms=0`, and
+        `continuous_decode_competing_one_shot_attempt_count=0`.
+      - Program FPS result:
+        after-first Program FPS improved from `15.799` to `21.848`, close to
+        the current input/decode ceiling. Loop workload improved from
+        `effective_attempt_fps=17.558` to `23.432`,
+        `attempt_body_elapsed_ms=19244` to `6872`, and `slow_attempt_count=65`
+        to `4`.
+      - caveats:
+        operator 4-view Preview was effectively suppressed:
+        `frames_rendered=0`,
+        `clean_output_render_result_kind=NoRenderableQuadView`,
+        `program_first_preview_visible=false`,
+        `program_first_preview_suppressed_count=899`,
+        `preview_compose_skipped_for_program_count=899`, and
+        `quad_view_compose_elapsed_ms=0`.
+        Startup was worse:
+        `program_output_first_render_elapsed_ms=11038`,
+        `program_output_missing_before_first_render_count=301`,
+        `program_startup_one_shot_fallback_attempt_count=0`, and
+        `program_startup_one_shot_fallback_suppressed_count=54`.
+      - diagnostic caveat:
+        `program_first_suppressed_program_preview_one_shot_decode_count=0`
+        did not fire for selected Program source player2 / slot1. Aggregate
+        suppression still succeeded through the existing Program-first Preview
+        suppression path, so this is a diagnostic attribution caveat rather
+        than evidence of remaining one-shot decode work.
+      - closeout implication:
+        ProgramOutput-only steady-state is close to `PASS` pending selected
+        source visual confirmation. If closeout requires usable operator 4-view
+        Preview at the same time, the run remains blocked and needs a separate
+        low-cost Preview strategy or separate Preview cadence/runtime.
     - lag-focused validation checklist for any future rerun:
       - improved marker is visible and matches the selected source identity
       - client summaries include `validation_source_marker_style` and

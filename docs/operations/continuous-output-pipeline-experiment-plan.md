@@ -1557,6 +1557,40 @@ Current limitations:
   `program_first_suppressed_program_preview_one_shot_decode_slot_counts`, and
   `program_first_suppressed_program_preview_one_shot_decode_reason_counts`
   (`continuous_latest_available`).
+- Latest Program-first suppression rerun:
+  `S:\stream-sync\manual-logs\program-output-program-first-suppression-rerun-20260611-005543`.
+  - The switcher included `--program-first-validation-mode`; classify the run
+    as ProgramOutput validation/performance mode.
+  - Program cleanliness, after-first availability, and smooth-latest render lag
+    are `PASS`.
+  - Aggregate one-shot suppression is `PASS`:
+    `one_shot_decode_attempt_count=0`,
+    `one_shot_decode_elapsed_ms=0`,
+    `continuous_decode_competing_one_shot_decode_elapsed_ms=0`, and
+    `continuous_decode_competing_one_shot_attempt_count=0`.
+  - After-first Program FPS improved from `15.799` to `21.848`. Loop workload
+    improved from `effective_attempt_fps=17.558` to `23.432`,
+    `attempt_body_elapsed_ms=19244` to `6872`, and `slow_attempt_count=65` to
+    `4`.
+  - Continuous decode remains around `20fps`, with output throughput `20.249`
+    and output/input ratio `0.980`; client effective output fps is around
+    `21fps`.
+  - Operator 4-view Preview was intentionally not usable in this mode:
+    `frames_rendered=0`,
+    `clean_output_render_result_kind=NoRenderableQuadView`,
+    `program_first_preview_visible=false`,
+    `program_first_preview_suppressed_count=899`,
+    `preview_compose_skipped_for_program_count=899`, and
+    `quad_view_compose_elapsed_ms=0`.
+  - Startup regressed and remains `WARNING`:
+    `program_output_first_render_elapsed_ms=11038`,
+    `program_output_missing_before_first_render_count=301`,
+    `program_startup_one_shot_fallback_attempt_count=0`, and
+    `program_startup_one_shot_fallback_suppressed_count=54`.
+  - `program_first_suppressed_program_preview_one_shot_decode_count=0` did not
+    fire for player2 / slot1, but aggregate one-shot suppression succeeded via
+    the existing Program-first Preview suppression path. Treat this as a
+    diagnostic attribution caveat, not as a workload failure.
 - Previous completed-template criteria-based ProgramOutput validation rerun:
   - log dir:
     `D:\stream-sync\manual-logs\program-output-criteria-validation-20260606-001029`
@@ -1593,32 +1627,36 @@ Current limitations:
     ProgramOutput still gets no overlay, watermark, Preview label, or 4-view
     Program fallback.
 - Next candidate order:
-  1. Rerun with the Program-source Preview one-shot suppression diagnostics and
-     compare one-shot elapsed/count, competing one-shot elapsed, attempt FPS,
-     after-first Program FPS, Program cleanliness, and operator Preview
-     Program-slot visibility.
-  2. Investigate continuous decoder / feed backlog. Start with throughput below
+  1. Split closeout scope explicitly: ProgramOutput-only validation/performance
+     mode is close to `PASS` pending selected-source visual confirmation, while
+     normal Program + operator 4-view Preview coexistence remains open.
+  2. Confirm selected-source visual identity for the latest Program-first
+     suppression rerun with human evidence.
+  3. Design or validate a normal operator monitoring path: separate Preview
+     cadence/runtime, a lower-cost Preview refresh strategy, or a dedicated
+     monitoring mode that does not reintroduce one-shot contention.
+  4. Investigate continuous decoder / feed backlog. Start with throughput below
      input, FFmpeg scale path, stdout read cadence, output interval, pending
      correspondence age, completed latency, reader blocked count, no-output
      counts, decoded cache dropping, input feed vs output throughput, and
      whether selected-source feed priority is needed.
-  3. Keep possible fixes narrow if evidence points clearly: no-scale or
+  5. Keep possible fixes narrow if evidence points clearly: no-scale or
      lower-cost FFmpeg path, low-latency / probe args, aggressive pending decode
      input dropping, decode only latest selected Program source, or workload
      reduction. Do not change OBS setup or add Program overlays.
-  4. Continue ProgramOutput non-FPS blocker audit and closeout criteria
+  6. Continue ProgramOutput non-FPS blocker audit and closeout criteria
      definition: OBS capture safety run evidence, Program-first validation vs
      final operator mode, diagnostics completeness, and long-run stability.
-  5. Keep the production operator Preview requirement active while same-loop
+  7. Keep the production operator Preview requirement active while same-loop
      Preview cadence/runtime tuning stays paused; current Preview is stable
      snapshot-only and future work may move to a separate cadence/runtime or a
      lighter renderer.
-  6. Program source switching over hotkey/control pipe later, after
+  8. Program source switching over hotkey/control pipe later, after
      ProgramOutput criteria are defined.
-  7. human-side `no-scale-bgra` A/B rerun for the scale path split slice
-  8. reader/completed latency breakdown diagnostics if no-scale evidence is
+  9. human-side `no-scale-bgra` A/B rerun for the scale path split slice
+  10. reader/completed latency breakdown diagnostics if no-scale evidence is
      ambiguous
-  9. direct BGR24 render path docs-first impact review only
+  11. direct BGR24 render path docs-first impact review only
 - The `no-scale-bgra` code slice is already implemented; do not broaden it
   before runtime evidence.
 - Keep one-shot suppression as strong contributor evidence, but not the current
