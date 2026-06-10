@@ -1,5 +1,113 @@
 <!-- stream-sync/docs/operations/session-log.md -->
 
+## 2026-06-10
+### Type
+- Codex ProgramOutput lag basis rerun record
+
+### Work
+- Recorded the latest ProgramOutput lag basis rerun:
+  `S:\stream-sync\manual-logs\program-output-lag-basis-rerun-20260610-133454`.
+- Kept ProgramOutput rendering behavior unchanged.
+- Updated closeout wording so `program_selected_source_frame_lag` is not the
+  primary smooth-latest Program render lag when
+  `program_selected_source_frame_lag_matches_smooth_latest=false`.
+- Defined the primary smooth-latest render-lag lens as:
+  `program_smooth_latest_selected_minus_rendered_lag` plus
+  `program_smooth_latest_rendered_minus_latest_continuous_gap`.
+- Kept continuous decode backlog as a separate pipeline health lens:
+  `continuous_decode_backlog_classification`,
+  `continuous_decode_backlog_frame_gap`, and
+  `continuous_decode_pending_correspondence_count`.
+
+### Rerun Evidence
+- Rerun validity: `valid`.
+- Server/client/switcher stderr: empty.
+- Client frames sent: client1 `900`, client2 `900`.
+- Program black / placeholder / missing-after-first-render: `0 / 0 / 0`.
+- Basis diagnostics:
+  - `program_selected_source_frame_lag=27`
+  - `program_selected_source_frame_lag_basis=continuous_decode_requested_minus_latest_decoded`
+  - `program_selected_source_frame_lag_basis_frame_id=844`
+  - `program_selected_source_frame_lag_matches_smooth_latest=false`
+- Smooth-latest Program relation:
+  - selected frame `844`
+  - rendered frame `843`
+  - latest continuous frame `843`
+  - selected-minus-rendered lag `1`
+  - selected-minus-latest-continuous lag `1`
+  - rendered-minus-latest-continuous gap `0`
+  - smooth-latest cache age `0ms`
+  - continuous latest output age `0ms`
+- Continuous backlog:
+  - `continuous_decode_backlog_classification=pending_correspondence_backlog`
+  - `continuous_decode_backlog_frame_gap=27`
+  - `continuous_decode_backlog_age_ms=1348`
+  - `continuous_decode_pending_correspondence_count=27`
+  - pending frame id range `844..870`
+  - input/output fps `18.668 / 18.067`
+  - output/input fps ratio `0.968`
+- Render counters:
+  - `program_render_effective_fps=12.253`
+  - `program_output_render_count=659`
+  - `program_window_render_success_count=659`
+  - `program_window_render_failure_count=241`
+  - `program_output_missing_before_first_render_count=241`
+
+### Interpretation
+- The large `program_selected_source_frame_lag=27` is not the actual
+  smooth-latest Program render lag in this rerun.
+- The basis diagnostics confirmed the mismatch:
+  `program_selected_source_frame_lag` used the continuous decode requested
+  minus latest decoded basis and did not match smooth-latest selected/rendered
+  lag.
+- Actual smooth-latest Program render lag is `1` frame, and the rendered frame
+  matches latest continuous output (`rendered_minus_latest_continuous_gap=0`).
+- Smooth-latest selection itself should be treated as correct.
+- Program cleanliness and after-first-render availability remain clean.
+- Continuous decode pending correspondence backlog is still real, but it should
+  be tracked separately from ProgramOutput selected-source render lag.
+
+### Status
+- Program cleanliness: `PASS`
+- Program availability after first render: `PASS`
+- Smooth-latest selection correctness: `PASS`
+- Smooth-latest render lag: `PASS`
+- Continuous decode backlog: `WARNING`
+- Program render FPS: `FAIL`
+- Overall closeout: `blocked`
+
+### Remaining Blockers
+- `program_render_effective_fps=12.253` remains too low for closeout.
+- Selected-source visual verification still needs human confirmation for this
+  latest rerun.
+- Continuous decode backlog remains a pipeline health warning and needs a
+  separate investigation path.
+
+### Files Changed
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+- `docs/operations/obs-capture-validation.md`
+- `docs/operations/continuous-output-lag-plan.md`
+- `docs/operations/continuous-output-pipeline-experiment-plan.md`
+
+### TODO Update
+- Marked the lag-basis rerun as recorded and valid.
+- Moved the immediate work from "rerun with basis diagnostics" to continuous
+  decoder/feed backlog investigation, render-FPS investigation, and
+  selected-source visual confirmation.
+
+### Validation
+- `cargo fmt`
+  - result: PASS
+- `cargo check -p stream-sync-switcher`
+  - result: PASS
+  - note: existing dead-code warnings remain in switcher helper functions
+- Focused tests
+  - not run; docs-only change and no Rust code changed
+- `git diff --check`
+  - result: PASS
+  - note: LF/CRLF warnings only
+
 ## 2026-06-08
 ### Type
 - Codex ProgramOutput unbounded handoff lag basis diagnostics

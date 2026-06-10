@@ -2,7 +2,7 @@
 
 # StreamSync TODO
 
-最終更新: 2026-06-08
+最終更新: 2026-06-10
 
 このファイルは、現在位置と次の作業だけを確認するための TODO です。
 時系列の作業履歴は `docs/operations/session-log.md` を正とし、検証の詳細は各運用ドキュメントへ寄せます。
@@ -55,6 +55,11 @@
 - 最新 unbounded handoff rerun は `S:\stream-sync\manual-logs\program-output-backlog-rerun-unbounded-handoff-20260608-014106`。OBS safety と Program cleanliness / availability は維持されたが、lag criteria は `FAIL`、overall も `FAIL`。`program_render_effective_fps=10.865`、`program_selected_source_frame_lag=37`、`program_continuous_selected_frame_lag=20`、`continuous_decode_latest_input_to_output_frame_gap=37`、`continuous_decode_backlog_classification=pending_correspondence_backlog`。
 - 同 rerun では smooth-latest rendered frame と latest continuous frame がともに `856`、selected frame は `876`、rendered-minus-latest-continuous gap は `0`、cache age は `1ms`。Program は最新 continuous decoded frame を拾えている可能性が高く、主因は Program selection ではなく continuous decode output / pending correspondence backlog 側。
 - ただし `program_selected_source_frame_lag=37` は smooth-latest selected-minus-rendered / selected-minus-latest-continuous の `20` と基準が異なる可能性があるため、次 rerun 用に `program_selected_source_frame_lag_basis`、`program_selected_source_frame_lag_basis_frame_id`、`program_selected_source_frame_lag_matches_smooth_latest` を summary-only で追加済み。
+- 最新 ProgramOutput lag basis rerun は `S:\stream-sync\manual-logs\program-output-lag-basis-rerun-20260610-133454`。rerun は `valid`、server/client/switcher stderr は empty、client1/client2 は各 `frames_sent=900`。
+- basis diagnostics により `program_selected_source_frame_lag=27` は `continuous_decode_requested_minus_latest_decoded` basis であり、`program_selected_source_frame_lag_matches_smooth_latest=false` と確定した。これは smooth-latest Program render lag の主指標として扱わない。
+- 最新 rerun の actual smooth-latest Program render lag は selected `844` / rendered `843` / latest continuous `843` に対して selected-minus-rendered `1`、rendered-minus-latest-continuous `0`。smooth-latest selection correctness は `PASS` と扱う。
+- continuous decode backlog は別枠の pipeline health metric として扱う。最新 rerun は `continuous_decode_backlog_classification=pending_correspondence_backlog`、`continuous_decode_backlog_frame_gap=27`、`continuous_decode_pending_correspondence_count=27`、pending frame id range `844..870`、backlog age `1348ms`。
+- 最新 rerun の status は Program cleanliness `PASS`、Program availability after first render `PASS`、smooth-latest selection correctness `PASS`、smooth-latest render lag `PASS`、continuous decode backlog `WARNING`、program_render_effective_fps `FAIL`。overall closeout は `blocked` 継続。理由は `program_render_effective_fps=12.253` が低く、selected-source visual verification はこの rerun で human confirmation がまだ必要なため。
 - smooth-latest 専用 diagnostics として
   `program_smooth_latest_selected_frame_id`、
   `program_smooth_latest_rendered_frame_id`、
@@ -68,14 +73,17 @@
   `program_smooth_latest_frame_age_ms` を追加済み。
 - `validation_source_marker_style=large-corner-band-v2` の validation-only source marker は実装済み。P1 / P2 は大きな corner band、block glyph、位置差のある高コントラスト pattern で区別する。既定 behavior は marker disabled のまま。
 - smooth-latest の latency / lag accept criteria と OBS safety checklist は docs
-  に定義済みだが、最新 rerun では lag が `Warning` になったため、ProgramOutput
-  closeout blocker は lag / continuous backlog investigation と operator Preview requirement として継続する。
+  に定義済み。basis mismatch 時は `program_selected_source_frame_lag` ではなく
+  `program_smooth_latest_selected_minus_rendered_lag` と
+  `program_smooth_latest_rendered_minus_latest_continuous_gap` を primary lag metric
+  とし、continuous backlog は別枠で tracking する。
 - 現在の詳細は `docs/operations/obs-capture-validation.md` と `docs/operations/session-log.md` を参照する。
 
 ## 次にやること
-1. [ ] basis diagnostics 付きで unbounded handoff / smooth-latest rerun を行い、`program_selected_source_frame_lag_basis`、basis frame id、smooth-latest lag との一致/不一致、`continuous_decode_backlog_classification`、input/output fps、output/input ratio、backlog frame gap、backlog age、pending correspondence、stdout reader / output interval を読む
-2. [ ] continuous decoder / feed backlog を調査し、throughput below input、FFmpeg scale path、stdout read cadence、output interval、pending correspondence age、completed latency、reader blocked / no-output counts、decoded cache dropping、input feed vs output throughput、selected-source feed priority の要否を切り分ける
-3. [ ] 4-view Preview requirement を維持したまま、ProgramOutput non-FPS blocker audit を更新し、closeout blocked を継続する
+1. [ ] continuous decoder / feed backlog を調査し、throughput below input、FFmpeg scale path、stdout read cadence、output interval、pending correspondence age、completed latency、reader blocked / no-output counts、decoded cache dropping、input feed vs output throughput、selected-source feed priority の要否を切り分ける
+2. [ ] program_render_effective_fps が `12.253` まで低い原因を、window render failure / missing-before-first-render / render loop cadence / same-loop cost のどれが支配しているか切り分ける
+3. [ ] selected-source visual verification を latest lag-basis rerun 相当の条件で human confirmation し、P2 visible / P1 absent を repo-backed evidence として残す
+4. [ ] 4-view Preview requirement を維持したまま、ProgramOutput non-FPS blocker audit を更新し、closeout blocked を継続する
 
 ## 保留 / 限定
 - same-loop low-cost Preview refresh tuning

@@ -496,13 +496,21 @@ Validated command examples for the Program path:
       If marker visibility or selected-source identity is not verified, the run
       cannot be classified above `Warning`.
     - treat the lag metrics as separate lenses, not one merged number:
-      - `program_selected_source_frame_lag`:
-        top-level Program output lag relative to the selected source
-      - `program_continuous_selected_frame_lag`:
-        continuous decoder side lag relative to the selected source
-      - `continuous_decode_latest_selected_to_output_frame_gap`:
-        gap between the latest selected continuous decoded frame and the frame
-        actually rendered to ProgramOutput
+      - Primary smooth-latest render lag is:
+        `program_smooth_latest_selected_minus_rendered_lag` plus
+        `program_smooth_latest_rendered_minus_latest_continuous_gap`.
+      - `program_selected_source_frame_lag` is not the primary smooth-latest
+        render-lag gate when
+        `program_selected_source_frame_lag_matches_smooth_latest=false`; in
+        that case it is a basis diagnostic for requested/input frame backlog.
+      - Continuous decode backlog is a separate pipeline health gate:
+        `continuous_decode_backlog_classification`,
+        `continuous_decode_backlog_frame_gap`, and
+        `continuous_decode_pending_correspondence_count`.
+      - `program_continuous_selected_frame_lag` and
+        `continuous_decode_latest_selected_to_output_frame_gap` remain useful
+        historical/backlog lenses, but they do not replace the primary
+        smooth-latest selected/rendered pair.
     - distinguish startup bootstrap one-shot from steady-state one-shot
       fallback:
       - startup-only bootstrap usage is allowed for `Good` / `Acceptable` when
@@ -519,9 +527,9 @@ Validated command examples for the Program path:
     - draft lag acceptance categories:
       - Good:
         source identity visually verified,
-        `program_selected_source_frame_lag<=5`,
-        `program_continuous_selected_frame_lag<=1`,
-        `continuous_decode_latest_selected_to_output_frame_gap<=5`,
+        primary smooth-latest render lag is low
+        (`program_smooth_latest_selected_minus_rendered_lag<=5` and
+        `program_smooth_latest_rendered_minus_latest_continuous_gap<=1`),
         `program_render_effective_fps>=22`,
         black / placeholder `0`,
         steady-state one-shot fallback count `0`,
@@ -529,9 +537,9 @@ Validated command examples for the Program path:
         perceived smoothness is smooth or only tiny stutter
       - Acceptable:
         source identity visually verified,
-        `program_selected_source_frame_lag<=8`,
-        `program_continuous_selected_frame_lag<=2`,
-        `continuous_decode_latest_selected_to_output_frame_gap<=8`,
+        primary smooth-latest render lag remains watchable
+        (`program_smooth_latest_selected_minus_rendered_lag<=8` and
+        `program_smooth_latest_rendered_minus_latest_continuous_gap<=2`),
         `program_render_effective_fps>=20`,
         black / placeholder `0`,
         one-shot fallback limited to startup-only or isolated evidence,
@@ -540,21 +548,21 @@ Validated command examples for the Program path:
         source identity is visually verified with degraded metrics, or marker
         readability is incomplete while logs / selected-source diagnostics do
         not contradict the expected source, and any of the following is true:
-        `program_selected_source_frame_lag` in `9..12`,
-        `program_continuous_selected_frame_lag` in `3..4`,
-        `continuous_decode_latest_selected_to_output_frame_gap` in `9..12`,
+        `program_smooth_latest_selected_minus_rendered_lag` in `9..12`,
+        `program_smooth_latest_rendered_minus_latest_continuous_gap` in
+        `3..4`,
         `program_render_effective_fps` in `18..19.999`,
         isolated black / placeholder appears,
-        or one-shot fallback is needed repeatedly beyond startup
+        one-shot fallback is needed repeatedly beyond startup,
+        or continuous decode backlog is present while Program remains clean
       - Fail:
         source identity appears wrong,
         selected-source diagnostics contradict the expected source,
         black / placeholder recurs,
         one-shot fallback is required as a steady-state crutch,
         perceived smoothness is clearly poor,
-        `program_selected_source_frame_lag>12`,
-        `program_continuous_selected_frame_lag>4`,
-        `continuous_decode_latest_selected_to_output_frame_gap>12`,
+        `program_smooth_latest_selected_minus_rendered_lag>12`,
+        `program_smooth_latest_rendered_minus_latest_continuous_gap>4`,
         or `program_render_effective_fps<18`
     - reference interpretation:
       the selected-source PASS reference run satisfies draft `Good` because:
@@ -750,6 +758,52 @@ Validated command examples for the Program path:
         do not close ProgramOutput near-MVP and do not call this run `PASS`.
         Keep 4-view Preview as operator monitoring only, outside the OBS
         Program scene.
+    - latest ProgramOutput lag-basis rerun:
+      - log dir:
+        `S:\stream-sync\manual-logs\program-output-lag-basis-rerun-20260610-133454`
+      - rerun validity:
+        `valid`; server/client/switcher stderr were empty.
+      - clients:
+        client1 `frames_sent=900`, client2 `frames_sent=900`.
+      - Program cleanliness / availability facts:
+        black / placeholder / missing-after-first-render were `0 / 0 / 0`;
+        `program_output_missing_before_first_render_count=241`.
+      - basis facts:
+        `program_selected_source_frame_lag=27`,
+        `program_selected_source_frame_lag_basis=continuous_decode_requested_minus_latest_decoded`,
+        `program_selected_source_frame_lag_basis_frame_id=844`, and
+        `program_selected_source_frame_lag_matches_smooth_latest=false`.
+      - smooth-latest render facts:
+        selected frame `844`, rendered frame `843`, latest continuous frame
+        `843`, selected-minus-rendered `1`, selected-minus-latest-continuous
+        `1`, rendered-minus-latest-continuous `0`, cache age `0ms`, and
+        continuous latest output age `0ms`.
+      - backlog facts:
+        `continuous_decode_backlog_classification=pending_correspondence_backlog`,
+        `continuous_decode_backlog_frame_gap=27`,
+        `continuous_decode_backlog_age_ms=1348`,
+        `continuous_decode_pending_correspondence_count=27`,
+        pending frame id range `844..870`,
+        input/output fps `18.668 / 18.067`, and output/input ratio `0.968`.
+      - render facts:
+        `program_render_effective_fps=12.253`,
+        `program_output_render_count=659`,
+        `program_window_render_success_count=659`, and
+        `program_window_render_failure_count=241`.
+      - interpretation:
+        the large `program_selected_source_frame_lag=27` is not the actual
+        smooth-latest Program render lag for this run. The primary
+        smooth-latest render lag is `1 + 0`, so smooth-latest selection and
+        render-source choice are correct. The `27` value belongs to the
+        continuous requested/input versus latest decoded basis and should be
+        tracked as continuous decode backlog / pipeline health.
+      - classification:
+        Program cleanliness `PASS`, Program availability after first render
+        `PASS`, smooth-latest selection correctness `PASS`, smooth-latest
+        render lag `PASS`, continuous decode backlog `WARNING`, Program render
+        FPS `FAIL`, overall closeout still `blocked` because render FPS remains
+        low and selected-source visual verification still needs human
+        confirmation for this rerun.
     - lag-focused validation checklist for any future rerun:
       - improved marker is visible and matches the selected source identity
       - client summaries include `validation_source_marker_style` and
@@ -1152,11 +1206,15 @@ Validated command examples for the Program path:
     - Preview / multiview capture sources are absent from the Program scene
     - the checklist result is recorded as `PASS`, `WARNING`, or `FAIL`
   - Latency / lag acceptance:
-    - accepted smooth-latest lag bounds are defined
-    - `program_selected_source_frame_lag`,
-      `program_continuous_selected_frame_lag`, and
-      `continuous_decode_latest_selected_to_output_frame_gap` are included in
-      the gate
+    - accepted smooth-latest lag bounds are defined around
+      `program_smooth_latest_selected_minus_rendered_lag` plus
+      `program_smooth_latest_rendered_minus_latest_continuous_gap`
+    - `program_selected_source_frame_lag` is included only as a top-level basis
+      diagnostic when it does not match smooth-latest
+    - continuous decode backlog is gated separately through
+      `continuous_decode_backlog_classification`,
+      `continuous_decode_backlog_frame_gap`, and
+      `continuous_decode_pending_correspondence_count`
     - perceived smoothness, black / placeholder count, one-shot fallback count,
       Program FPS, and visual source verification are included together rather
       than treating lag as a single-number gate

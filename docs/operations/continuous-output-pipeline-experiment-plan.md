@@ -2,7 +2,7 @@
 
 # Continuous Output Pipeline Experiment Plan
 
-Last updated: 2026-06-05
+Last updated: 2026-06-10
 
 ## Purpose
 - Design the next docs-first candidates after output availability diagnostics
@@ -1446,6 +1446,43 @@ Current limitations:
     `program_selected_source_frame_lag_basis_frame_id`, and
     `program_selected_source_frame_lag_matches_smooth_latest` are added for the
     next rerun.
+- Latest ProgramOutput lag basis rerun:
+  - log dir:
+    `S:\stream-sync\manual-logs\program-output-lag-basis-rerun-20260610-133454`
+  - rerun validity:
+    `valid`; server/client/switcher stderr were empty
+  - ProgramOutput stayed clean and available after first render:
+    black / placeholder / missing-after-first-render were all `0`
+  - basis diagnostics:
+    `program_selected_source_frame_lag=27`,
+    `program_selected_source_frame_lag_basis=continuous_decode_requested_minus_latest_decoded`,
+    `program_selected_source_frame_lag_basis_frame_id=844`,
+    `program_selected_source_frame_lag_matches_smooth_latest=false`
+  - smooth-latest frame relation:
+    selected frame `844`, rendered frame `843`, latest continuous frame `843`,
+    selected-minus-rendered `1`, selected-minus-latest-continuous `1`,
+    rendered-minus-latest-continuous `0`, cache age `0ms`, continuous latest
+    output age `0ms`
+  - continuous decode backlog:
+    `continuous_decode_backlog_classification=pending_correspondence_backlog`,
+    `continuous_decode_backlog_frame_gap=27`,
+    `continuous_decode_backlog_age_ms=1348`,
+    `continuous_decode_pending_correspondence_count=27`,
+    pending frame id range `844..870`, input/output fps `18.668 / 18.067`,
+    output/input ratio `0.968`
+  - interpretation:
+    the large `program_selected_source_frame_lag` is a requested/input versus
+    latest decoded basis metric, not the actual smooth-latest Program render
+    lag. The primary smooth-latest render lag is `1 + 0`, so selection
+    correctness and render-source choice are `PASS`. Continuous decode backlog
+    remains a separate pipeline health warning.
+  - classification:
+    Program cleanliness `PASS`, Program availability after first render
+    `PASS`, smooth-latest selection correctness `PASS`, smooth-latest render
+    lag `PASS`, continuous decode backlog `WARNING`, Program render FPS `FAIL`
+    because `program_render_effective_fps=12.253`; overall closeout remains
+    blocked until render FPS improves and selected-source visual verification
+    is human-confirmed for this rerun.
 - Previous completed-template criteria-based ProgramOutput validation rerun:
   - log dir:
     `D:\stream-sync\manual-logs\program-output-criteria-validation-20260606-001029`
@@ -1482,17 +1519,14 @@ Current limitations:
     ProgramOutput still gets no overlay, watermark, Preview label, or 4-view
     Program fallback.
 - Next candidate order:
-  1. Rerun unbounded handoff / smooth-latest with the new lag-basis diagnostics
-     and backlog diagnostics. Read `program_selected_source_frame_lag_basis`,
-     basis frame id, smooth-latest lag match/mismatch, input/output fps,
-     output/input ratio, backlog frame gap, backlog age, and backlog
-     classification together with pending correspondence, reader blocked,
-     no-output, output interval, and pipeline mode fields.
-  2. Investigate continuous decoder / feed backlog. Start with throughput below
+  1. Investigate continuous decoder / feed backlog. Start with throughput below
      input, FFmpeg scale path, stdout read cadence, output interval, pending
      correspondence age, completed latency, reader blocked count, no-output
      counts, decoded cache dropping, input feed vs output throughput, and
      whether selected-source feed priority is needed.
+  2. Investigate low Program render FPS separately from smooth-latest render
+     lag. Start with `program_window_render_failure_count`,
+     missing-before-first-render, render-loop cadence, and same-loop cost.
   3. Keep possible fixes narrow if evidence points clearly: no-scale or
      lower-cost FFmpeg path, low-latency / probe args, aggressive pending decode
      input dropping, decode only latest selected Program source, or workload

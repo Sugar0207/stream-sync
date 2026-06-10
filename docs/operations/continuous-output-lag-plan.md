@@ -2,7 +2,7 @@
 
 # Continuous Output Lag Plan
 
-Last updated: 2026-06-08
+Last updated: 2026-06-10
 
 ## Purpose
 - Analyze why slot0 continuous decoded output still trails the requested render frame after bounded feed helper and bounded-lag lookup wiring both reached runtime evidence.
@@ -13,6 +13,30 @@ Last updated: 2026-06-08
   move the next main line to output availability / throughput.
 
 ## Latest Evidence
+- latest ProgramOutput lag basis rerun:
+  - `S:\stream-sync\manual-logs\program-output-lag-basis-rerun-20260610-133454`
+  - rerun validity is `valid`; server/client/switcher stderr were empty.
+  - `program_selected_source_frame_lag=27` is confirmed to use
+    `continuous_decode_requested_minus_latest_decoded` basis, with
+    `program_selected_source_frame_lag_basis_frame_id=844` and
+    `program_selected_source_frame_lag_matches_smooth_latest=false`.
+  - This value is not the primary smooth-latest Program render lag. The
+    primary smooth-latest relation is selected `844`, rendered `843`, latest
+    continuous `843`, selected-minus-rendered `1`, and
+    rendered-minus-latest-continuous gap `0`.
+  - Smooth-latest selection / render-source choice is therefore `PASS` for this
+    rerun; Program rendered the latest continuous output it had.
+  - Continuous decode backlog remains a separate pipeline health warning:
+    `continuous_decode_backlog_classification=pending_correspondence_backlog`,
+    `continuous_decode_backlog_frame_gap=27`,
+    `continuous_decode_pending_correspondence_count=27`, pending frame id range
+    `844..870`, backlog age `1348ms`, input/output fps `18.668 / 18.067`, and
+    output/input ratio `0.968`.
+  - Program cleanliness and after-first-render availability remain `PASS`
+    because black / placeholder / missing-after-first-render were `0 / 0 / 0`.
+  - Overall closeout remains blocked by low render FPS
+    (`program_render_effective_fps=12.253`) and missing human selected-source
+    visual confirmation for this rerun.
 - latest ProgramOutput unbounded handoff backlog rerun:
   - `S:\stream-sync\manual-logs\program-output-backlog-rerun-unbounded-handoff-20260608-014106`
   - overall criteria-based ProgramOutput validation is `FAIL` because lag
@@ -482,13 +506,17 @@ Implementation shape:
   same backlog shape in both completed and pending correspondence:
   - completed avg/max/latest `2624.940ms` / `5258ms` / `5251ms`
   - pending avg/max `2540.606ms` / `5300ms`
-- 2026-06-08 ProgramOutput lag basis diagnostics slice adds:
+- 2026-06-08 ProgramOutput lag basis diagnostics slice added:
   - `program_selected_source_frame_lag_basis`
   - `program_selected_source_frame_lag_basis_frame_id`
   - `program_selected_source_frame_lag_matches_smooth_latest`
 - These fields are summary-only and intended to distinguish the historical
   `program_selected_source_frame_lag` requested/input-frame basis from the
   smooth-latest selected/rendered/latest-continuous frame-id basis.
+- 2026-06-10 rerun validated the basis split:
+  `program_selected_source_frame_lag=27` used
+  `continuous_decode_requested_minus_latest_decoded`, while the primary
+  smooth-latest render-lag pair was `1 + 0`.
 - Held fields:
   - `continuous_decode_input_to_output_lag_frames_avg`
   - `continuous_decode_output_latency_frames_avg`
