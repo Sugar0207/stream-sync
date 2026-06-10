@@ -64,6 +64,7 @@
 - latest rerun は first render 後の Program attempt が実質すべて成功している一方、loop 自体が `900 / 53781ms = 16.734fps` 相当まで落ちている。主因は Program render failure ではなく、固定 cadence sleep に `attempt_body_elapsed_ms=21842` が上乗せされる shared loop cadence 低下。
 - `render_elapsed_ms`、`render_buffer_cpu_scale_copy_elapsed_ms`、`gdi_paint_wait_elapsed_ms`、`quad_view_compose_elapsed_ms` は Program 専用 render timing ではなく、`ObsFriendlyFourViewLoopWindowRenderRuntime` を通る 4-view Preview / clean-output 側の集計。ProgramOutput window render は別 runtime で success/failure count はあるが、elapsed はまだ分離されていない。
 - latest rerun の重い shared-loop 要素は one-shot decode `6235ms` / competing one-shot `6131ms`、Preview compose `3045ms`、Preview render call `3218ms`、render buffer copy/materialization `1824ms`、GDI paint wait `1070ms`。closeout blocker は Program smooth-latest render lag ではなく、shared loop cadence と competing one-shot / Preview workload として扱う。
+- Program FPS split diagnostics は実装済み。次 rerun で `program_rendered_after_first_render`、`program_render_effective_fps_after_first_render`、`program_window_render_failure_before_first_render`、`program_window_render_failure_after_first_render`、`program_window_render_elapsed_ms` / avg / max を読む。
 - smooth-latest 専用 diagnostics として
   `program_smooth_latest_selected_frame_id`、
   `program_smooth_latest_rendered_frame_id`、
@@ -84,11 +85,10 @@
 - 現在の詳細は `docs/operations/obs-capture-validation.md` と `docs/operations/session-log.md` を参照する。
 
 ## 次にやること
-1. [ ] Program FPS criteria を見直し、primary を total-run `program_render_effective_fps` だけでなく after-first-render Program success cadence / attempt cadence で判定する形に整理する
-2. [ ] 必要なら summary-only diagnostics として `program_render_effective_fps_after_first_render`、`program_rendered_after_first_render`、Program 専用 render elapsed を追加する
-3. [ ] continuous decoder / feed backlog を調査し、throughput below input、FFmpeg scale path、stdout read cadence、output interval、pending correspondence age、completed latency、reader blocked / no-output counts、decoded cache dropping、input feed vs output throughput、selected-source feed priority の要否を切り分ける
-4. [ ] one-shot decode / Preview workload を Program-first validation mode でさらに抑える最小策を検討する。ただし ProgramOutput rendering behavior と OBS safety / cleanliness は変えない
-5. [ ] selected-source visual verification を latest lag-basis rerun 相当の条件で human confirmation し、P2 visible / P1 absent を repo-backed evidence として残す
+1. [ ] Program FPS split diagnostics 付きで latest lag-basis rerun 相当を再実行し、total-run FPS と after-first-render Program FPS / failure before-after を比較する
+2. [ ] continuous decoder / feed backlog を調査し、throughput below input、FFmpeg scale path、stdout read cadence、output interval、pending correspondence age、completed latency、reader blocked / no-output counts、decoded cache dropping、input feed vs output throughput、selected-source feed priority の要否を切り分ける
+3. [ ] one-shot decode / Preview workload を Program-first validation mode でさらに抑える最小策を検討する。ただし ProgramOutput rendering behavior と OBS safety / cleanliness は変えない
+4. [ ] selected-source visual verification を latest lag-basis rerun 相当の条件で human confirmation し、P2 visible / P1 absent を repo-backed evidence として残す
 
 ## 保留 / 限定
 - same-loop low-cost Preview refresh tuning

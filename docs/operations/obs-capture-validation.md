@@ -858,6 +858,20 @@ Validated command examples for the Program path:
         `program_window_render_failure_after_first_render`; optional Program-only
         render elapsed may be added later if it can wrap `program_render_runtime`
         without changing rendering behavior.
+      - implemented summary-only diagnostics:
+        `program_rendered_after_first_render`,
+        `program_render_effective_fps_after_first_render`,
+        `program_window_render_failure_before_first_render`,
+        `program_window_render_failure_after_first_render`,
+        `program_window_render_elapsed_ms`,
+        `program_window_render_elapsed_ms_avg`, and
+        `program_window_render_elapsed_ms_max`.
+        `program_rendered_after_first_render` excludes the first successful
+        Program render itself.
+      - behavior note:
+        these fields only observe the existing ProgramOutput tick/render call;
+        they do not alter selected-source choice, smooth-latest behavior,
+        rendering, OBS target separation, Preview cadence, or one-shot decode.
     - lag-focused validation checklist for any future rerun:
       - improved marker is visible and matches the selected source identity
       - client summaries include `validation_source_marker_style` and
@@ -1279,6 +1293,11 @@ Validated command examples for the Program path:
     - Preview / clean-output render timings must not be treated as Program-only
       render timings unless a dedicated Program render timing diagnostic is
       added
+    - next Program FPS rerun should compare:
+      `program_render_effective_fps`,
+      `program_render_effective_fps_after_first_render`,
+      `program_window_render_failure_before_first_render`, and
+      `program_window_render_failure_after_first_render`
     - perceived smoothness, black / placeholder count, one-shot fallback count,
       Program FPS, and visual source verification are included together rather
       than treating lag as a single-number gate

@@ -55,6 +55,20 @@ Last updated: 2026-06-10
   - The current evidence does not prove Program-window-only render performance
     is the bottleneck. It points to metric basis plus shared-loop cadence and
     one-shot / Preview workload.
+- Program FPS split diagnostics are now implemented as summary-only fields:
+  - `program_rendered_after_first_render`
+  - `program_render_effective_fps_after_first_render`
+  - `program_window_render_failure_before_first_render`
+  - `program_window_render_failure_after_first_render`
+  - `program_window_render_elapsed_ms`
+  - `program_window_render_elapsed_ms_avg`
+  - `program_window_render_elapsed_ms_max`
+  - `program_rendered_after_first_render` excludes the first successful
+    Program render itself.
+- These fields do not change ProgramOutput rendering behavior. The next rerun
+  should use them to decide whether total-run `program_render_effective_fps` is
+  only a startup/loop-health blocker or also a steady-state Program FPS
+  blocker.
 - latest ProgramOutput unbounded handoff backlog rerun:
   - `S:\stream-sync\manual-logs\program-output-backlog-rerun-unbounded-handoff-20260608-014106`
   - overall criteria-based ProgramOutput validation is `FAIL` because lag

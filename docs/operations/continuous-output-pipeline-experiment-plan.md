@@ -1513,6 +1513,17 @@ Current limitations:
     it as Program smooth-latest render lag or Program cleanliness failure.
     Closeout should split startup, after-first-render Program success cadence,
     and shared-loop workload.
+  - Implemented summary-only FPS split diagnostics:
+    `program_rendered_after_first_render`,
+    `program_render_effective_fps_after_first_render`,
+    `program_window_render_failure_before_first_render`,
+    `program_window_render_failure_after_first_render`,
+    `program_window_render_elapsed_ms`,
+    `program_window_render_elapsed_ms_avg`, and
+    `program_window_render_elapsed_ms_max`.
+  - These diagnostics do not change ProgramOutput rendering behavior. They only
+    make the next rerun able to separate startup waiting, after-first-render
+    Program cadence, and Program tick/render elapsed from total-loop health.
 - Previous completed-template criteria-based ProgramOutput validation rerun:
   - log dir:
     `D:\stream-sync\manual-logs\program-output-criteria-validation-20260606-001029`
@@ -1549,10 +1560,11 @@ Current limitations:
     ProgramOutput still gets no overlay, watermark, Preview label, or 4-view
     Program fallback.
 - Next candidate order:
-  1. Split Program FPS criteria and diagnostics: keep total-run
-     `program_render_effective_fps` as loop-health, but add/derive
-     after-first-render Program success cadence before treating Program
-     steady-state FPS as failed.
+  1. Rerun with Program FPS split diagnostics and compare total-run
+     `program_render_effective_fps` against
+     `program_render_effective_fps_after_first_render`,
+     `program_window_render_failure_before_first_render`, and
+     `program_window_render_failure_after_first_render`.
   2. Investigate continuous decoder / feed backlog. Start with throughput below
      input, FFmpeg scale path, stdout read cadence, output interval, pending
      correspondence age, completed latency, reader blocked count, no-output

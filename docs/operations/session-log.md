@@ -2,6 +2,78 @@
 
 ## 2026-06-10
 ### Type
+- Codex ProgramOutput FPS split diagnostics
+
+### Work
+- Added minimal ProgramOutput FPS split diagnostics without changing
+  ProgramOutput rendering behavior.
+- Kept ProgramOutput selection, smooth-latest rendering, OBS target separation,
+  Preview behavior, and one-shot / Preview workload behavior unchanged.
+- Added summary-only fields to separate total-run Program FPS from
+  after-first-render Program FPS.
+
+### Added Diagnostics
+- `program_rendered_after_first_render`
+  - Program render success count after the first Program render has already
+    completed, excluding the first successful render itself.
+- `program_render_effective_fps_after_first_render`
+  - `program_rendered_after_first_render` divided by elapsed time after
+    `program_output_first_render_elapsed_ms`.
+- `program_window_render_failure_before_first_render`
+  - Program-enabled attempts that did not render before first Program render.
+- `program_window_render_failure_after_first_render`
+  - Program-enabled attempts that did not render after first Program render.
+- `program_window_render_elapsed_ms`
+  - Total elapsed time around the ProgramOutput tick/render call.
+- `program_window_render_elapsed_ms_avg`
+  - Average ProgramOutput tick/render elapsed over Program-enabled attempts.
+- `program_window_render_elapsed_ms_max`
+  - Maximum ProgramOutput tick/render elapsed for a Program-enabled attempt.
+
+### Intent
+- Distinguish total-run FPS basis from steady-state Program availability.
+- Make it explicit whether `program_window_render_failure_count` is startup
+  availability waiting or after-first-render failure.
+- Provide evidence for closeout criteria so total-run
+  `program_render_effective_fps` is not the only Program FPS gate.
+- Keep ProgramOutput clean: no overlays, no Preview labels, no 4-view Program
+  fallback, and no render behavior change.
+
+### Files Changed
+- `apps/switcher/src/main.rs`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+- `docs/operations/obs-capture-validation.md`
+- `docs/operations/continuous-output-lag-plan.md`
+- `docs/operations/continuous-output-pipeline-experiment-plan.md`
+
+### TODO Update
+- Marked FPS split diagnostics as implemented.
+- Moved the next task to rerun with these fields and compare total-run FPS with
+  after-first-render Program FPS / before-after failures.
+
+### Validation
+- `cargo fmt`
+  - result: PASS
+- `cargo check -p stream-sync-switcher`
+  - result: PASS
+  - note: existing dead-code warnings remain in switcher helper functions
+- `cargo test -p stream-sync-switcher switcher_four_view_two_real_handoff_preview_summary_formats_expected_fields`
+  - result: PASS, 1 bin test
+- `cargo test -p stream-sync-switcher switcher_two_real_program_smooth_latest_prefers_stale_continuous_frame`
+  - result: PASS, 1 bin test
+- `cargo test -p stream-sync-switcher switcher_program_smooth_latest_frame_lag_helpers_split_render_and_latest`
+  - result: PASS, 1 bin test
+- `cargo test -p stream-sync-switcher switcher_continuous_decode_backlog_classification_names_decode_output_backlog`
+  - result: PASS, 1 bin test
+- `cargo test -p stream-sync-switcher switcher_four_view_two_real_handoff_preview_loop_program_first_reuses_preview_after_first_render`
+  - result: PASS, 1 bin test
+- `git diff --check`
+  - result: PASS
+  - note: LF/CRLF warnings only
+
+## 2026-06-10
+### Type
 - Codex ProgramOutput render FPS basis investigation
 
 ### Work
